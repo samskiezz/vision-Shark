@@ -76,7 +76,8 @@ Vision Shark’s OpenClaw integration is a policy/orchestration layer, not a dir
 | Prometheus-style metrics | metrics route/module added in the operator hardening tranche |
 | Large Parquet captures | `vision_shark/large_interchange.py`, bounded SQLite/Arrow streaming, CLI import/export |
 | CAN database interchange | `vision_shark/database_interchange.py`, reviewed DBC/ARXML/KCD/SYM/FIBEX inspection and DBC normalization |
-| MDF4 raw CAN import | `vision_shark/mf4_interchange.py`, explicit CAN bus-event inspection and chunked `CAN_DataFrame` import on this branch |
+| MDF4 raw CAN import | `vision_shark/mf4_interchange.py`, explicit CAN bus-event inspection and chunked `CAN_DataFrame` import |
+| Signed profile/evidence fleet distribution | `vision_shark/profile_distribution.py`, Ed25519 bundles/catalogs, durable registry, replay-safe peer sync and CLI workflows |
 
 These features remain passive/evidence-bound: structural overlap is not vehicle identity, ECU timing clusters are not ECU attribution, decoded segmentation inherits the validity of the reviewed decoder supplied to it, and measurement channels are not treated as raw CAN without bus-event evidence.
 
@@ -96,6 +97,14 @@ The optional `measurement` dependency uses asammdf to inspect local MDF/MF4 file
 
 `CAN_RemoteFrame` and `CAN_ErrorFrame` groups are surfaced in inspection counts but not silently transformed into the current `Frame` model because the model does not retain every source field needed for lossless representation. This is intentionally reported as a bounded gap rather than hidden data loss.
 
+### Signed profile/evidence and fleet-sync tranche
+
+`vision_shark/profile_distribution.py` defines a bounded Ed25519-signed profile bundle that contains canonical `VehiclePack` JSON plus optional named evidence. A trusted-publisher store binds signing key IDs to publisher identities. Bundle verification enforces the signed manifest, SHA-256 and byte-length metadata, member-count and size ceilings, duplicate-member rejection, safe relative paths and symbolic-link rejection before the profile is accepted.
+
+The durable `ProfileFleetRegistry` stores exact `(pack_id, version, digest)` identities in SQLite. Re-importing the same version/digest is idempotent, a same-version/different-digest collision is rejected, and a valid older signed version may be retained as historical evidence without moving the active profile backwards. Fleet catalogs are separately signed and contain exact bundle digests and vehicle assignments. Peer state is monotonic by fleet/publisher/key sequence: lower sequences are rejected as rollback and same-sequence/different-digest catalogs are rejected as equivocation.
+
+Synchronization imports only bundles whose signed digest is missing locally and rechecks the exact digest after import. Vehicle assignment application is opt-in. Remote assignment entries are upserted when explicitly applied; local assignments that are absent from the peer catalog are not implicitly deleted. The CLI exposes create/verify/import/status/catalog/sync workflows and immediately verifies newly created bundles/catalogs against the supplied trust store. This subsystem moves research/profile metadata only and creates no vehicle-command, ECU-coding or firmware-flashing path.
+
 ## 7. Historical audit snapshot — `main` @ `640c3b9`
 
 The following findings describe the older 12 September snapshot and are preserved for traceability. They must not be read as the current state of `main`.
@@ -109,19 +118,15 @@ The following findings describe the older 12 September snapshot and are preserve
 7. **Low — partial J2534 protocol table:** vendor CAN-FD IDs vary.
 8. **Low — DoIP learning semantics:** diagnostics must remain separate from raw CAN learning.
 
-## 8. Current-main reconciliation
+## 8. Current-main and branch reconciliation
 
-As of the supported `main` base used for this tranche on 13 September 2026:
+As of 13 September 2026, the supported `main` base before this profile-distribution merge is `e3ff3dd5a57f362eb0e9355a4921a35cf52827e6`. It includes the passive landscape tranche, authenticated supported-server hardening, bounded Parquet interchange, reviewed CAN-database interchange and evidence-bound MDF4 raw-CAN import.
 
-- `main` includes the passive landscape feature tranche, authenticated supported-server hardening, bounded Parquet large-capture integration and reviewed CAN-database interchange.
-- Normal adapter inventory/auto-connect no longer needs hidden DoIP broadcast discovery; active DoIP discovery is an explicit audited opt-in path, and explicit DoIP binding requires routed read-only UDS proof.
-- A discovery VIN is not sufficient vehicle identity evidence by itself.
-- The supported gateway has admin/viewer authentication, HttpOnly SameSite=Strict sessions, CSRF enforcement, request-bound idempotency, protected operational APIs/metrics and security audit events.
-- OpenClaw remains separated from direct driving authority; real providers remain explicit integrations.
+Normal adapter inventory/auto-connect no longer needs hidden DoIP broadcast discovery; active DoIP discovery is an explicit audited opt-in path, and explicit DoIP binding requires routed read-only UDS proof. A discovery VIN is not sufficient vehicle identity evidence by itself. The supported gateway has admin/viewer authentication, HttpOnly SameSite=Strict sessions, CSRF enforcement, request-bound idempotency, protected operational APIs/metrics and security audit events. OpenClaw remains separated from direct driving authority; real providers remain explicit integrations.
 
-### CI truth
+The signed profile/evidence and fleet-sync branch was rebased from that current main line and its latest production gate completed successfully with **136 tests passing**. The same gate also passed dependency resolution, Ruff static checks, Python compilation, JavaScript syntax, dependency vulnerability audit with **no known vulnerabilities found**, CycloneDX SBOM generation/upload, implementation-marker rejection and 0.9.0 release-metadata consistency.
 
-The merged CAN-database tranche passed the production gate with **123 tests passing** plus dependency resolution, Ruff, Python compile, JavaScript syntax, dependency vulnerability audit, CycloneDX SBOM, implementation-marker rejection and release metadata checks. During development of the MDF4 tranche, its functional test suite reached **128 passing tests**; one intermediate CI run then correctly failed the dependency-audit gate because dependency resolution had backtracked the separate `cyclonedx-bom` tooling to an old stack containing vulnerable `urllib3`. The branch replaces that conflicting standalone SBOM tool with current `pip-audit` CycloneDX output and must pass the complete production gate before merge.
+The already-merged MDF4 tranche's production gate passed **128 tests** plus the same static, compile, dependency, audit, SBOM and release checks. The earlier development-only SBOM dependency conflict is no longer current: CI uses current `pip-audit` CycloneDX output instead of a separate conflicting `cyclonedx-bom` install.
 
 ## 9. Remaining optional software integrations
 
@@ -130,7 +135,6 @@ These remain genuine future integrations rather than hidden “completed” capa
 - provider-specific live J2534 backend only where passive/listen-only behavior can be enforced and validated;
 - full KUKSA wire-protocol interoperability;
 - real maps/navigation, phone/eCall, health-device and vehicle-convenience OpenClaw providers;
-- signed external vehicle-profile/evidence distribution and fleet synchronization;
 - hardened authenticated/TLS LAN deployment profile if remote operator access becomes a product requirement.
 
 ## 10. Remaining physical/evidence gates
