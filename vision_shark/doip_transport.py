@@ -57,7 +57,8 @@ class DoIPReadOnlyClient:
     def connect(self):
         self.close();s=socket.create_connection((self.host,DOIP_PORT),timeout=self.timeout);s.settimeout(self.timeout);self.sock=s
         try:
-            s.sendall(_packet(0x0005,struct.pack('!HB',self.source_address,0x00)))
+            # ISO 13400 routing activation: source address (2), activation type (1), reserved (4).
+            s.sendall(_packet(0x0005,struct.pack('!HB4x',self.source_address,0x00)))
             while True:
                 ptype,body=_recv(s)
                 if ptype==0x0007:
