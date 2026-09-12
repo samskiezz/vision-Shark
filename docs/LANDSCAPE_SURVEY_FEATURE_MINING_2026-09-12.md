@@ -118,15 +118,15 @@ The following findings describe the older 12 September snapshot and are preserve
 7. **Low — partial J2534 protocol table:** vendor CAN-FD IDs vary.
 8. **Low — DoIP learning semantics:** diagnostics must remain separate from raw CAN learning.
 
-## 8. Current-main and branch reconciliation
+## 8. Current-main reconciliation
 
-As of 13 September 2026, the supported `main` base before this profile-distribution merge is `e3ff3dd5a57f362eb0e9355a4921a35cf52827e6`. It includes the passive landscape tranche, authenticated supported-server hardening, bounded Parquet interchange, reviewed CAN-database interchange and evidence-bound MDF4 raw-CAN import.
+As of 13 September 2026, the supported `main` tip is `f414042c7bcec6c56707f74a12fca2d739359c1e`. It includes the passive landscape tranche, authenticated supported-server hardening, bounded Parquet interchange, reviewed CAN-database interchange, evidence-bound MDF4 raw-CAN import, and signed vehicle-profile/evidence plus multi-vehicle fleet synchronization.
 
 Normal adapter inventory/auto-connect no longer needs hidden DoIP broadcast discovery; active DoIP discovery is an explicit audited opt-in path, and explicit DoIP binding requires routed read-only UDS proof. A discovery VIN is not sufficient vehicle identity evidence by itself. The supported gateway has admin/viewer authentication, HttpOnly SameSite=Strict sessions, CSRF enforcement, request-bound idempotency, protected operational APIs/metrics and security audit events. OpenClaw remains separated from direct driving authority; real providers remain explicit integrations.
 
-The signed profile/evidence and fleet-sync branch was rebased from that current main line and its latest production gate completed successfully with **136 tests passing**. The same gate also passed dependency resolution, Ruff static checks, Python compilation, JavaScript syntax, dependency vulnerability audit with **no known vulnerabilities found**, CycloneDX SBOM generation/upload, implementation-marker rejection and 0.9.0 release-metadata consistency.
+The current `main` production gate completed successfully with **136 tests passing**. It also passed dependency resolution, Ruff static checks, Python compilation, JavaScript syntax, dependency vulnerability audit with **no known vulnerabilities found**, CycloneDX SBOM generation/upload, implementation-marker rejection and 0.9.0 release-metadata consistency. The CI workflow actions are pinned to current Node 24 releases: checkout v7.0.1, setup-python v7.0.0 and upload-artifact v7.0.1.
 
-The already-merged MDF4 tranche's production gate passed **128 tests** plus the same static, compile, dependency, audit, SBOM and release checks. The earlier development-only SBOM dependency conflict is no longer current: CI uses current `pip-audit` CycloneDX output instead of a separate conflicting `cyclonedx-bom` install.
+The prior MDF4 merge gate passed **128 tests** plus the same static, compile, dependency, audit, SBOM and release checks. The earlier development-only SBOM dependency conflict is no longer current: CI uses current `pip-audit` CycloneDX output instead of a separate conflicting `cyclonedx-bom` install.
 
 ## 9. Remaining optional software integrations
 
