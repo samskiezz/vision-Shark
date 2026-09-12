@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import io
-
 import canmatrix.formats as formats
 import pytest
 
@@ -32,17 +30,15 @@ def _source_cluster():
 
 def _write_exportable_format(path, fmt: str):
     cluster = _source_cluster()
-    target = io.BytesIO()
     capabilities = formats.supportedFormats[fmt]
     assert "load" in capabilities
     assert "dump" in capabilities
-    if "clusterExporter" in capabilities:
-        formats.dump(cluster, target, fmt)
-    else:
-        formats.dump(next(iter(cluster.values())), target, fmt)
-    payload = target.getvalue()
-    assert payload
-    path.write_bytes(payload)
+    with path.open("wb") as target:
+        if "clusterExporter" in capabilities:
+            formats.dump(cluster, target, fmt)
+        else:
+            formats.dump(next(iter(cluster.values())), target, fmt)
+    assert path.stat().st_size > 0
 
 
 def test_supported_database_readers_are_loaded():
