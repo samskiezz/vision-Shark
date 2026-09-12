@@ -95,6 +95,8 @@ Passive CAN/CAN-FD and ENET are intentionally different flows:
 - MF4 import preserves bus channel, 11/29-bit identifier semantics through IDE, CAN-FD EDL/BRS/ESI, payload length/data, direction and timestamps. Generic measurement signals are never guessed into raw CAN frames.
 - MDF `CAN_RemoteFrame` and `CAN_ErrorFrame` groups are detected and reported but are not silently mapped into the current `Frame` model where their source semantics cannot be preserved completely.
 - Optional DBC/ARXML/KCD/SYM/FIBEX inspection and normalization to one DBC per CAN matrix. Inputs are explicitly typed; generic XML is rejected as ambiguous; XML DTD/entity declarations are rejected before parsing; source/output hashes and conversion-fidelity results are reported.
+- Signed Ed25519 vehicle-profile/evidence bundles with bounded contents, SHA-256 member integrity, trusted-publisher verification, immutable version/digest conflict detection and rollback-safe active-profile selection.
+- Signed fleet catalogs with sequence replay/equivocation protection, exact profile-digest matching, transport-agnostic peer-directory synchronization and opt-in vehicle assignment application.
 - Passive changed-byte sniffer view.
 - Event-anchored bit-change discovery, timing/entropy anomaly comparison and ECU clock-skew membership hypotheses.
 - Passive ISO-TP reassembly with normal/extended addressing, bounds, sequence validation and timeout/supersession handling.
@@ -125,7 +127,68 @@ vision-shark db-convert --input network.arxml --format arxml --to dbc --output-d
 
 For XML inputs, specify `arxml`, `kcd` or `fibex` explicitly. The converter reports whether core CAN semantics survived DBC normalization and separately whether the generated DBC fits Vision Shark's bounded runtime decoder subset.
 
-`vision-shark doctor` reports whether the optional Parquet, CAN-database and MDF4 measurement dependencies are available.
+## Signed profile and fleet distribution
+
+External vehicle-profile/evidence bundles and fleet catalogs use Ed25519 signatures. The trust store contains only trusted public keys; signing private keys stay outside the registry and are supplied explicitly to CLI commands.
+
+Example trust store:
+
+```json
+{
+  "schema": "vision-shark-trust-v1",
+  "keys": {
+    "lab-key": {
+      "publisher": "Vision Lab",
+      "public_key": "BASE64_RAW_ED25519_PUBLIC_KEY"
+    }
+  }
+}
+```
+
+A profile is ordinary `VehiclePack` JSON. Bundle creation validates the profile, applies size/path bounds, signs the manifest and immediately verifies the completed bundle against the supplied trust store before reporting success:
+
+```bash
+vision-shark profile-bundle-create \
+  --profile shark-profile.json \
+  --version 1 \
+  --publisher 'Vision Lab' \
+  --key-id lab-key \
+  --private-key-file lab-ed25519.key \
+  --trust-store trust.json \
+  --evidence capture-note.txt=./capture-note.txt \
+  --output shark-v1.vsp
+
+vision-shark profile-bundle-verify --trust-store trust.json --bundle shark-v1.vsp
+vision-shark profile-import --registry-dir fleet-registry --trust-store trust.json --bundle shark-v1.vsp
+vision-shark fleet-assign --registry-dir fleet-registry --trust-store trust.json --vehicle-id shark-001 --pack-id shark-au-research
+vision-shark fleet-status --registry-dir fleet-registry --trust-store trust.json
+```
+
+Publish a signed fleet catalog from the registry, then synchronize another registry from a local/mounted peer mirror. Assignment application is deliberately explicit:
+
+```bash
+vision-shark fleet-catalog-export \
+  --registry-dir fleet-registry \
+  --trust-store trust.json \
+  --fleet-id lab-fleet \
+  --sequence 1 \
+  --publisher 'Vision Lab' \
+  --key-id lab-key \
+  --private-key-file lab-ed25519.key \
+  --output fleet-registry/fleet.json
+
+vision-shark fleet-catalog-verify --trust-store trust.json --catalog fleet-registry/fleet.json
+vision-shark fleet-sync \
+  --registry-dir second-registry \
+  --trust-store trust.json \
+  --peer-root fleet-registry \
+  --catalog fleet-registry/fleet.json \
+  --apply-assignments
+```
+
+Fleet sequence numbers are monotonic per trusted fleet/publisher/key tuple. Replayed lower sequences and same-sequence/different-digest equivocation are rejected. Exact bundle digests are rechecked during synchronization. This workflow distributes research/profile metadata only; it does not transmit vehicle commands, code ECUs or flash firmware.
+
+`vision-shark doctor` reports whether the optional Parquet, CAN-database and MDF4 measurement dependencies are available and confirms that the built-in signed profile/fleet synchronization subsystem is present.
 
 ## OpenClaw
 

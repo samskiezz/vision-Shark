@@ -29,6 +29,7 @@ def _doctor_report():
         "parquet_interchange_available": importlib.util.find_spec("pyarrow") is not None,
         "database_interchange_available": importlib.util.find_spec("canmatrix") is not None,
         "mf4_interchange_available": importlib.util.find_spec("asammdf") is not None,
+        "signed_profile_fleet_sync_available": True,
         "j2534_providers": [
             {"interface": x.interface, "endpoint": x.endpoint, "metadata": x.metadata}
             for x in j2534
@@ -191,6 +192,229 @@ def _mf4_import_can(args) -> int:
         store.close()
 
 
+def _load_profile_document(path: str) -> dict:
+    source = Path(path)
+    if not source.is_file() or source.stat().st_size > 2 * 1024 * 1024:
+        raise ValueError("profile JSON must be a regular file no larger than 2 MiB")
+    try:
+        value = json.loads(source.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError("invalid profile JSON") from exc
+    if not isinstance(value, dict):
+        raise ValueError("profile JSON must contain an object")
+    return value
+
+
+def _load_evidence_specs(specs: list[str]) -> dict[str, bytes]:
+    evidence: dict[str, bytes] = {}
+    total = 0
+    for spec in specs:
+        if "=" not in spec:
+            raise ValueError("--evidence must use name=path")
+        name, path_text = spec.split("=", 1)
+        name = name.strip()
+        if not name or name in evidence:
+            raise ValueError("evidence names must be non-empty and unique")
+        path = Path(path_text)
+        if not path.is_file():
+            raise ValueError(f"evidence path is not a regular file: {path}")
+        size = path.stat().st_size
+        if size > 16 * 1024 * 1024:
+            raise ValueError(f"evidence file exceeds 16 MiB: {name}")
+        total += size
+        if total > 64 * 1024 * 1024:
+            raise ValueError("evidence files exceed 64 MiB total")
+        evidence[name] = path.read_bytes()
+    return evidence
+
+
+def _profile_bundle_create(args) -> int:
+    from .profile_distribution import (
+        TrustedPublishers,
+        create_profile_bundle,
+        load_private_key_file,
+        verify_profile_bundle,
+    )
+
+    destination = Path(args.output)
+    try:
+        trust = TrustedPublishers.from_file(args.trust_store)
+        result = create_profile_bundle(
+            _load_profile_document(args.profile),
+            args.version,
+            args.publisher,
+            args.key_id,
+            load_private_key_file(args.private_key_file),
+            destination,
+            evidence=_load_evidence_specs(args.evidence),
+        )
+        verified = verify_profile_bundle(destination, trust)
+        result["verified"] = True
+        result["evidence"] = verified["evidence"]
+        print(json.dumps(result, indent=2))
+        return 0
+    except (OSError, ValueError) as exc:
+        destination.unlink(missing_ok=True)
+        print(f"Profile bundle creation failed: {exc}", file=sys.stderr)
+        return 2
+
+
+def _profile_bundle_verify(args) -> int:
+    from .profile_distribution import TrustedPublishers, verify_profile_bundle
+
+    try:
+        result = verify_profile_bundle(args.bundle, TrustedPublishers.from_file(args.trust_store))
+        summary = {
+            "pack_id": result["pack_id"],
+            "version": result["version"],
+            "publisher": result["publisher"],
+            "key_id": result["key_id"],
+            "created_ns": result["created_ns"],
+            "bundle_sha256": result["bundle_sha256"],
+            "bundle_bytes": result["bundle_bytes"],
+            "evidence": result["evidence"],
+            "verified": True,
+        }
+        print(json.dumps(summary, indent=2))
+        return 0
+    except (OSError, ValueError) as exc:
+        print(f"Profile bundle verification failed: {exc}", file=sys.stderr)
+        return 2
+
+
+def _profile_import(args) -> int:
+    from .profile_distribution import ProfileFleetRegistry, TrustedPublishers
+
+    registry = None
+    try:
+        trust = TrustedPublishers.from_file(args.trust_store)
+        registry = ProfileFleetRegistry(args.registry_dir, trust)
+        result = registry.import_bundle(args.bundle)
+        print(json.dumps(result, indent=2))
+        return 0
+    except (OSError, ValueError) as exc:
+        print(f"Profile import failed: {exc}", file=sys.stderr)
+        return 2
+    finally:
+        if registry is not None:
+            registry.close()
+
+
+def _fleet_assign(args) -> int:
+    from .profile_distribution import ProfileFleetRegistry, TrustedPublishers
+
+    registry = None
+    try:
+        registry = ProfileFleetRegistry(args.registry_dir, TrustedPublishers.from_file(args.trust_store))
+        result = registry.assign_vehicle(args.vehicle_id, args.pack_id, args.version)
+        print(json.dumps(result, indent=2))
+        return 0
+    except (OSError, ValueError) as exc:
+        print(f"Fleet assignment failed: {exc}", file=sys.stderr)
+        return 2
+    finally:
+        if registry is not None:
+            registry.close()
+
+
+def _fleet_status(args) -> int:
+    from .profile_distribution import ProfileFleetRegistry, TrustedPublishers
+
+    registry = None
+    try:
+        registry = ProfileFleetRegistry(args.registry_dir, TrustedPublishers.from_file(args.trust_store))
+        print(json.dumps(registry.catalog(), indent=2))
+        return 0
+    except (OSError, ValueError) as exc:
+        print(f"Fleet status failed: {exc}", file=sys.stderr)
+        return 2
+    finally:
+        if registry is not None:
+            registry.close()
+
+
+def _fleet_catalog_export(args) -> int:
+    from .profile_distribution import (
+        ProfileFleetRegistry,
+        TrustedPublishers,
+        load_private_key_file,
+        sign_fleet_catalog,
+        verify_fleet_catalog,
+    )
+
+    registry = None
+    destination = Path(args.output)
+    try:
+        trust = TrustedPublishers.from_file(args.trust_store)
+        registry = ProfileFleetRegistry(args.registry_dir, trust)
+        result = sign_fleet_catalog(
+            registry,
+            args.fleet_id,
+            args.sequence,
+            args.publisher,
+            args.key_id,
+            load_private_key_file(args.private_key_file),
+            destination,
+        )
+        verified = verify_fleet_catalog(destination, trust)
+        result["verified"] = True
+        result["verified_fleet_id"] = verified["fleet_id"]
+        print(json.dumps(result, indent=2))
+        return 0
+    except (OSError, ValueError) as exc:
+        destination.unlink(missing_ok=True)
+        print(f"Fleet catalog export failed: {exc}", file=sys.stderr)
+        return 2
+    finally:
+        if registry is not None:
+            registry.close()
+
+
+def _fleet_catalog_verify(args) -> int:
+    from .profile_distribution import TrustedPublishers, verify_fleet_catalog
+
+    try:
+        result = verify_fleet_catalog(args.catalog, TrustedPublishers.from_file(args.trust_store))
+        payload = result["payload"]
+        summary = {
+            "fleet_id": result["fleet_id"],
+            "sequence": payload["sequence"],
+            "publisher": payload["publisher"],
+            "key_id": payload["key_id"],
+            "catalog_sha256": result["catalog_sha256"],
+            "profiles": len(payload["profiles"]),
+            "assignments": len(payload["assignments"]),
+            "verified": True,
+        }
+        print(json.dumps(summary, indent=2))
+        return 0
+    except (OSError, ValueError) as exc:
+        print(f"Fleet catalog verification failed: {exc}", file=sys.stderr)
+        return 2
+
+
+def _fleet_sync(args) -> int:
+    from .profile_distribution import ProfileFleetRegistry, TrustedPublishers, sync_from_peer_directory
+
+    registry = None
+    try:
+        registry = ProfileFleetRegistry(args.registry_dir, TrustedPublishers.from_file(args.trust_store))
+        result = sync_from_peer_directory(
+            registry,
+            args.peer_root,
+            args.catalog,
+            apply_assignments=args.apply_assignments,
+        )
+        print(json.dumps(result, indent=2))
+        return 0
+    except (OSError, ValueError) as exc:
+        print(f"Fleet synchronization failed: {exc}", file=sys.stderr)
+        return 2
+    finally:
+        if registry is not None:
+            registry.close()
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(prog="vision-shark")
     parser.add_argument("--version", action="version", version=__version__)
@@ -238,6 +462,57 @@ def main(argv=None):
     mf4_import.add_argument("--batch-size", type=int, default=4096)
     mf4_import.add_argument("--max-frames", type=int, default=10_000_000)
 
+    profile_create = sub.add_parser("profile-bundle-create")
+    profile_create.add_argument("--profile", required=True)
+    profile_create.add_argument("--version", type=int, required=True)
+    profile_create.add_argument("--publisher", required=True)
+    profile_create.add_argument("--key-id", required=True)
+    profile_create.add_argument("--private-key-file", required=True)
+    profile_create.add_argument("--trust-store", required=True)
+    profile_create.add_argument("--output", required=True)
+    profile_create.add_argument("--evidence", action="append", default=[], metavar="NAME=PATH")
+
+    profile_verify = sub.add_parser("profile-bundle-verify")
+    profile_verify.add_argument("--trust-store", required=True)
+    profile_verify.add_argument("--bundle", required=True)
+
+    profile_import = sub.add_parser("profile-import")
+    profile_import.add_argument("--registry-dir", required=True)
+    profile_import.add_argument("--trust-store", required=True)
+    profile_import.add_argument("--bundle", required=True)
+
+    fleet_assign = sub.add_parser("fleet-assign")
+    fleet_assign.add_argument("--registry-dir", required=True)
+    fleet_assign.add_argument("--trust-store", required=True)
+    fleet_assign.add_argument("--vehicle-id", required=True)
+    fleet_assign.add_argument("--pack-id", required=True)
+    fleet_assign.add_argument("--version", type=int)
+
+    fleet_status = sub.add_parser("fleet-status")
+    fleet_status.add_argument("--registry-dir", required=True)
+    fleet_status.add_argument("--trust-store", required=True)
+
+    fleet_catalog_export = sub.add_parser("fleet-catalog-export")
+    fleet_catalog_export.add_argument("--registry-dir", required=True)
+    fleet_catalog_export.add_argument("--trust-store", required=True)
+    fleet_catalog_export.add_argument("--fleet-id", required=True)
+    fleet_catalog_export.add_argument("--sequence", type=int, required=True)
+    fleet_catalog_export.add_argument("--publisher", required=True)
+    fleet_catalog_export.add_argument("--key-id", required=True)
+    fleet_catalog_export.add_argument("--private-key-file", required=True)
+    fleet_catalog_export.add_argument("--output", required=True)
+
+    fleet_catalog_verify = sub.add_parser("fleet-catalog-verify")
+    fleet_catalog_verify.add_argument("--trust-store", required=True)
+    fleet_catalog_verify.add_argument("--catalog", required=True)
+
+    fleet_sync = sub.add_parser("fleet-sync")
+    fleet_sync.add_argument("--registry-dir", required=True)
+    fleet_sync.add_argument("--trust-store", required=True)
+    fleet_sync.add_argument("--peer-root", required=True)
+    fleet_sync.add_argument("--catalog", required=True)
+    fleet_sync.add_argument("--apply-assignments", action="store_true")
+
     args = parser.parse_args(argv)
 
     if args.command == "doctor":
@@ -255,6 +530,22 @@ def main(argv=None):
         return _mf4_inspect(args)
     if args.command == "mf4-import-can":
         return _mf4_import_can(args)
+    if args.command == "profile-bundle-create":
+        return _profile_bundle_create(args)
+    if args.command == "profile-bundle-verify":
+        return _profile_bundle_verify(args)
+    if args.command == "profile-import":
+        return _profile_import(args)
+    if args.command == "fleet-assign":
+        return _fleet_assign(args)
+    if args.command == "fleet-status":
+        return _fleet_status(args)
+    if args.command == "fleet-catalog-export":
+        return _fleet_catalog_export(args)
+    if args.command == "fleet-catalog-verify":
+        return _fleet_catalog_verify(args)
+    if args.command == "fleet-sync":
+        return _fleet_sync(args)
 
     if args.command == "probe":
         from .adapter_discovery import discover_adapters, discover_doip
