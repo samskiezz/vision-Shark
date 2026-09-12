@@ -47,6 +47,13 @@ class VisionOrchestrator:
                     if proof.get('vin') and not identity.get('vin'):identity['vin']=proof['vin']
                     self.session.vehicle=identity;self.session.confidence=.99;self.session.capabilities['diagnostics_read']=True;self.knowledge.put('vehicle.doip_identity',identity,.99,'doip-readonly-proof',maturity='observed');self.knowledge.put('vehicle.doip_diagnostic_proof',proof,.99,'doip-readonly-proof',maturity='observed');self.session.step('doip_diagnostics_proven',latency_ms=proof.get('latency_ms'));self._audit('doip_diagnostics_proven',proof)
             self.session.state=WorkflowState.READY;return self.session.snapshot()
+    async def disconnect_auto(self):
+        """Atomically drop runtime transport and all per-session diagnostic authority."""
+        async with self._lock:
+            prior_source=self.session.source;prior_endpoint=self.diagnostic_endpoint
+            self.runtime.disconnect();self.session=VehicleSession();self.diagnostic_endpoint=None;self.diagnostic_proof=None
+            self._audit('disconnected',{'source':prior_source,'endpoint':None if not prior_endpoint else prior_endpoint.get('endpoint')})
+            return self.status()
     async def identify_auto(self,settle_s=.25):
         async with self._lock:
             if self.session.source=='doip' and self.diagnostic_endpoint:return self.session.snapshot()
