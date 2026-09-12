@@ -4,6 +4,7 @@ from contextlib import contextmanager
 
 from fastapi import HTTPException
 
+from .all_terrain_research import seed_all_terrain_research
 from .research_context import (
     DEFAULT_TEST_PROTOCOLS,
     ClaimEvent,
@@ -40,6 +41,16 @@ def install_field_routes(app, recording_store, audit):
     @app.get("/api/research/protocols")
     def research_protocols():
         return {"protocols": DEFAULT_TEST_PROTOCOLS, "raw_vehicle_tx": False}
+
+    @app.post("/api/research/seed/all-terrain-evx")
+    def seed_research():
+        try:
+            with research_store() as research:
+                result = seed_all_terrain_research(research)
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        audit.append("research", "all_terrain_seed_loaded", result)
+        return result
 
     @app.post("/api/research/session-context/{recording_id}")
     def put_session_context(recording_id: int, body: SessionContext):
