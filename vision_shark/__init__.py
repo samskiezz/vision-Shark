@@ -1,2 +1,2 @@
-"""Vision Shark: a local-first vehicle observation and engineering application."""
-__version__ = '0.7.1.dev1'
+"""Vision Shark passive vehicle intelligence and shadow-autonomy platform."""
+__version__ = "0.8.0"
