@@ -38,10 +38,14 @@ def test_integrated_workflow_and_durable_recording(tmp_path):
     c.post('/api/disconnect')
 
 
-def test_ui_uses_integrated_orchestrator(tmp_path):
+def test_ui_uses_proof_health_diagnostics_and_openclaw(tmp_path):
     c=TestClient(create_app(tmp_path))
     html=c.get('/').text
     js=c.get('/static/app.js').text
-    assert 'CONNECT VEHICLE' in html and 'IDENTIFY' in html and 'LEARN' in html
-    assert '/api/vision/connect' in js and '/api/vision/identify' in js and '/api/vision/learn' in js
+    for text in ('CONNECT VEHICLE','IDENTIFY','LEARN','COMMS PROOF','READ VIN / F190','OpenClaw'):
+        assert text in html
+    for endpoint in ('/api/vision/connect','/api/vision/identify','/api/vision/learn','/api/system/health','/api/diagnostics/doip/dids','/api/diagnostics/doip/dtcs','/api/openclaw/capabilities','/api/intents?state=pending'):
+        assert endpoint in js
     assert 'source-select' not in html
+    assert 'proof.uds_exchange' in js
+    assert 'VEHICLE READY' in js
