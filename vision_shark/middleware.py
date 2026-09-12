@@ -14,7 +14,7 @@ class RequestBodyDeadlineMiddleware:
   try:
    while more:
     remaining=self.deadline_s-(time.monotonic()-started)
-    if remaining<=0:raise asyncio.TimeoutError
+    if remaining<=0:raise TimeoutError
     msg=await asyncio.wait_for(receive(),timeout=remaining);messages.append(msg)
     if msg['type']=='http.disconnect':break
     if msg['type']=='http.request':
@@ -22,7 +22,7 @@ class RequestBodyDeadlineMiddleware:
      if seen>self.max_body_bytes:raise OverflowError
      more=bool(msg.get('more_body',False))
     else:more=False
-  except asyncio.TimeoutError:return await JSONResponse({'detail':'Request body deadline exceeded'},status_code=408)(scope,receive,send)
+  except TimeoutError:return await JSONResponse({'detail':'Request body deadline exceeded'},status_code=408)(scope,receive,send)
   except OverflowError:return await JSONResponse({'detail':'Request body too large'},status_code=413)(scope,receive,send)
   index=0
   async def replay_receive():
