@@ -48,15 +48,22 @@ class DoIPReadOnlyClient:
     ALLOWED_UDS_SERVICES={0x19,0x22}
     def __init__(self,host:str,target_address:int,source_address:int=0x0e80,timeout:float=2.0):
         self.host=str(host);self.target_address=int(target_address);self.source_address=int(source_address);self.timeout=float(timeout);self.sock=None;self.routing_active=False
+        if not 0<=self.target_address<=0xffff or not 0<=self.source_address<=0xffff:raise ValueError('DoIP logical address out of range')
+        if self.timeout<=0 or self.timeout>30:raise ValueError('DoIP timeout must be >0 and <=30 seconds')
     def connect(self):
         self.close();s=socket.create_connection((self.host,DOIP_PORT),timeout=self.timeout);s.settimeout(self.timeout);self.sock=s
-        s.sendall(_packet(0x0005,struct.pack('!HB',self.source_address,0x00)))
-        ptype,body=_recv(s)
-        if ptype!=0x0006 or len(body)<5:raise DoIPError('routing activation response missing')
-        response_code=body[4]
-        if response_code not in (0x10,0x11):raise DoIPError(f'routing activation denied: 0x{response_code:02x}')
-        self.routing_active=True
-        return self
+        try:
+            s.sendall(_packet(0x0005,struct.pack('!HB',self.source_address,0x00)))
+            ptype,body=_recv(s)
+            if ptype!=0x0006 or len(body)<5:raise DoIPError('routing activation response missing')
+            client_addr,entity_addr,response_code=struct.unpack('!HHB',body[:5])
+            if client_addr!=self.source_address:raise DoIPError('routing activation client logical address mismatch')
+            if entity_addr!=self.target_address:raise DoIPError('routing activation entity logical address mismatch')
+            if response_code==0x11:raise DoIPError('routing activation requires confirmation; confirmation workflow is not implemented')
+            if response_code!=0x10:raise DoIPError(f'routing activation denied: 0x{response_code:02x}')
+            self.routing_active=True;return self
+        except Exception:
+            self.close();raise
     def close(self):
         if self.sock:
             try:self.sock.close()
@@ -77,6 +84,7 @@ class DoIPReadOnlyClient:
             if len(body)<4:raise DoIPError('short diagnostic response')
             source,target=struct.unpack('!HH',body[:4])
             if target!=self.source_address:continue
+            if source!=self.target_address:raise DoIPError('diagnostic response source logical address mismatch')
             return body[4:]
     def read_dids(self,dids:list[int]):
         if not dids:raise ValueError('at least one DID is required')
@@ -90,11 +98,9 @@ class DoIPReadOnlyClient:
         DID F190 (VIN) is used only as a standards-based probe. A negative UDS
         response still proves that DoIP routing and diagnostic message exchange work.
         """
-        started=time.monotonic_ns()
-        self.connect()
+        started=time.monotonic_ns();self.connect()
         try:
-            response=self.read_dids([0xF190]);parsed=parse_uds_response(response,0x22)
-            vin=None
+            response=self.read_dids([0xF190]);parsed=parse_uds_response(response,0x22);vin=None
             if parsed['ok'] and len(response)>=3 and response[1:3]==b'\xf1\x90':
                 value=response[3:].rstrip(b'\x00\xff')
                 try:vin=value.decode('ascii').strip() or None
