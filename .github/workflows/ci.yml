@@ -18,7 +18,11 @@ jobs:
         run: ruff check vision_shark tests --select F,B,RUF012
       - run: python -m pytest -q
       - run: python -m compileall -q vision_shark
-      - run: node --check vision_shark/web/app.js
+      - name: JavaScript syntax checks
+        run: |
+          for file in vision_shark/web/*.js; do
+            node --check "$file"
+          done
       - name: Dependency vulnerability audit
         run: pip-audit
       - name: Generate CycloneDX SBOM
