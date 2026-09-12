@@ -1,10 +1,14 @@
 from fastapi.testclient import TestClient
 
+from vision_shark.agent_policy import evaluate_policy
 from vision_shark.anomaly import compare_anomaly
 from vision_shark.api import create_app
+from vision_shark.dbc import parse_database
 from vision_shark.domain import Frame
 from vision_shark.ecu_fingerprint import ecu_clock_hypotheses
 from vision_shark.event_diff import event_bit_diff
+from vision_shark.platform_match import match_platforms
+from vision_shark.segmentation import segment_recording
 from vision_shark.sniffer import sniffer_view
 from vision_shark.trace_import import parse_asc,parse_trc
 from vision_shark.uds_reference import reference
@@ -78,6 +82,43 @@ def test_uds_reference_contains_standard_vin_and_nrc():
     assert data['negative_response_codes']['31']=='requestOutOfRange'
 
 
+def test_platform_match_prefers_overlapping_signature_but_stays_hypothesis():
+    rows=[frame(1,0x123,'00'),frame(2,0x456,'0000')]
+    profiles=[
+        {'name':'candidate','messages':[{'arbitration_id':0x123,'length':1},{'arbitration_id':0x456,'length':2}]},
+        {'name':'other','messages':[{'arbitration_id':0x700,'length':8}]},
+    ]
+    result=match_platforms(rows,profiles)
+    assert result['best']['name']=='candidate' and result['best']['score']==1.0
+    assert result['status']=='hypotheses_only'
+
+
+def test_segmentation_finds_idle_drive_and_charge_from_reviewed_decoder():
+    dbc='''VERSION ""
+NS_ :
+BS_:
+BU_: ECU
+BO_ 256 Example: 8 ECU
+ SG_ Vehicle_Speed : 0|16@1+ (0.01,0) [0|655.35] "km/h" ECU
+ SG_ Charge_Power : 16|16@1+ (0.1,0) [0|6553.5] "kW" ECU
+'''
+    rows=[
+        frame(0,0x100,'0000000000000000'),
+        frame(1_000_000_000,0x100,'e803000000000000'),
+        frame(2_000_000_000,0x100,'0000640000000000'),
+    ]
+    result=segment_recording(rows,parse_database(dbc))
+    assert [x['state'] for x in result['segments']]==['idle','drive','charge']
+    assert result['status']=='decoder_based_hypothesis'
+
+
+def test_agent_policy_routes_never_grant_driving():
+    denied=evaluate_policy('steer','steering')
+    assert denied['allowed'] is False and denied['direct_driving'] is False
+    allowed=evaluate_policy('set_destination','navigation')
+    assert allowed['allowed'] is True and allowed['direct_driving'] is False
+
+
 def test_research_routes_and_discovery_are_nontransmitting_by_default(monkeypatch,tmp_path):
     import vision_shark.research_api as research
     calls=[]
@@ -90,6 +131,8 @@ def test_research_routes_and_discovery_are_nontransmitting_by_default(monkeypatc
         assert denied.status_code==403
         uds=client.get('/api/reference/uds')
         assert uds.status_code==200 and 'F190' in uds.json()['dids']
+        policy=client.post('/api/agent/policy/evaluate',json={'action':'steer','domain':'steering','emergency':False})
+        assert policy.status_code==200 and policy.json()['allowed'] is False
 
 
 def test_trace_import_and_recording_analysis_api(tmp_path):
@@ -102,3 +145,5 @@ def test_trace_import_and_recording_analysis_api(tmp_path):
         assert event.status_code==200
         clusters=client.get(f'/api/recordings/{rid}/ecu-clusters')
         assert clusters.status_code==200
+        match=client.post(f'/api/recordings/{rid}/platform-match',json={'profiles':[{'name':'trace','messages':[{'arbitration_id':0x123,'length':1}]}]})
+        assert match.status_code==200 and match.json()['best']['name']=='trace'
