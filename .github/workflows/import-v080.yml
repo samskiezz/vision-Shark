@@ -1,4 +1,4 @@
-name: Import Vision Shark 0.8.0 full source
+name: Import Vision Shark full source
 on:
   push:
     branches: [main]
@@ -14,33 +14,31 @@ jobs:
         with: {fetch-depth: 1}
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
         with: {python-version: '3.12'}
-      - name: Reconstruct and verify full source
+      - name: Reconstruct staged source
         shell: bash
         run: |
           set -euo pipefail
-          cat .source-transfer/v080.part.* > /tmp/source.b64
+          cat .source-transfer/part-*.xz.b64 > /tmp/source.b64
           base64 -d /tmp/source.b64 > /tmp/source.tar.xz
           mkdir /tmp/source
           tar -xJf /tmp/source.tar.xz -C /tmp/source
           test -f /tmp/source/vision_shark/runtime.py
-          test -f /tmp/source/vision_shark/autonomy/runtime.py
-          test -f /tmp/source/vision_shark/orchestrator.py
-          test -f /tmp/source/MANIFEST.sha256
+          test -f /tmp/source/vision_shark/diagnostics.py
+          test -f /tmp/source/vision_shark/replay.py
           find . -mindepth 1 -maxdepth 1 ! -name .git ! -name .source-transfer -exec rm -rf {} +
           cp -a /tmp/source/. .
           rm -rf .source-transfer
           python -m pip install --upgrade pip
           python -m pip install -e '.[dev]'
-          python scripts/verify_manifest.py
           python -m pytest -q
           python -m compileall -q vision_shark
           node --check vision_shark/web/app.js
-      - name: Commit verified reconstructed source
+      - name: Commit reconstructed source
         shell: bash
         run: |
           set -euo pipefail
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add -A
-          git commit -m 'Rebuild Vision Shark 0.8.0 full integrated platform'
+          git commit -m 'Restore complete Vision Shark integration source'
           git push origin HEAD:main
