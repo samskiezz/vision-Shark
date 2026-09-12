@@ -32,7 +32,7 @@ def fingerprint_frames(frames:Iterable[Frame])->dict:
     messages=[]
     for (bus,arb_id,extended,can_fd),items in sorted(groups.items(),key=lambda x:(x[0][0],x[0][1],x[0][2],x[0][3])):
         timestamps=sorted(int(x.ts_ns) for x in items)
-        periods=[(b-a)/1e6 for a,b in zip(timestamps,timestamps[1:]) if b>=a]
+        periods=[(b-a)/1e6 for a,b in zip(timestamps,timestamps[1:],strict=False) if b>=a]
         lengths=sorted({len(bytes.fromhex(x.data)) for x in items})
         messages.append({'bus':bus,'id':arb_id,'id_hex':f'0x{arb_id:X}','extended':extended,'can_fd':can_fd,'lengths':lengths,'count':len(items),'median_period_ms':None if not periods else round(float(statistics.median(periods)),3)})
     first=min((int(x.ts_ns) for x in rows),default=None);last=max((int(x.ts_ns) for x in rows),default=None)
