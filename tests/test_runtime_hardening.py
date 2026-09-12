@@ -5,6 +5,7 @@ from vision_shark.adapter_discovery import _broadcasts,_parse_doip_identificatio
 from vision_shark.audit_log import EventAuditLog
 from vision_shark.api import create_app
 from vision_shark.doip_transport import DoIPError,parse_uds_response
+from vision_shark.health import build_health_report
 from vision_shark.orchestrator import VisionOrchestrator
 from vision_shark.runtime import Runtime
 from vision_shark.storage import RecordingStore
@@ -67,6 +68,27 @@ def test_doip_connect_sets_diagnostics_only_after_proof(monkeypatch,tmp_path):
     assert result['capabilities']['diagnostics_read'] is True
     assert result['vehicle']['status']=='doip_diagnostics_proven'
     store.close()
+
+
+def test_health_requires_observed_socketcan_frames():
+    class RuntimeStub:
+        def __init__(self,frames):self.frames=frames
+        def status(self):return {'connected':True,'source_kind':'socketcan','frames_seen':self.frames,'last_frame_age_s':0.1,'receive_drops':0,'decode_errors':0}
+    class OrchestratorStub:
+        def status(self):return {'state':'ready','source':'socketcan','knowledge_facts':0,'capabilities':{}}
+    assert build_health_report(RuntimeStub(0),OrchestratorStub())['vehicle_ready'] is False
+    ready=build_health_report(RuntimeStub(1),OrchestratorStub())
+    assert ready['vehicle_ready'] is True and ready['vehicle_transport_proven'] is True
+
+
+def test_health_requires_routed_doip_proof():
+    class RuntimeStub:
+        def status(self):return {'connected':False,'source_kind':None}
+    class OrchestratorStub:
+        def __init__(self,proof):self.proof=proof
+        def status(self):return {'state':'ready','source':'doip','diagnostic_proof':self.proof,'knowledge_facts':0,'capabilities':{'diagnostics_read':bool(self.proof.get('uds_exchange'))}}
+    assert build_health_report(RuntimeStub(),OrchestratorStub({'routing_active':True,'uds_exchange':False}))['vehicle_ready'] is False
+    assert build_health_report(RuntimeStub(),OrchestratorStub({'routing_active':True,'uds_exchange':True}))['vehicle_ready'] is True
 
 
 def test_live_openclaw_and_audit_api(tmp_path):
