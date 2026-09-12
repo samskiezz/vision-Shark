@@ -5,13 +5,16 @@ from vision_shark.api import create_app
 
 
 def test_release_version_and_readiness(tmp_path):
-    assert __version__ == "0.8.0"
+    assert __version__ == "0.9.0"
     c=TestClient(create_app(tmp_path))
     r=c.get('/api/production/readiness')
     assert r.status_code==200
     body=r.json()
     assert body['software_release_ready'] is True
+    assert body['vehicle_communication_proven'] is False
     assert body['mode']=='production-passive-shadow'
+    assert body['capabilities']['doip_read_only_diagnostics'] is True
+    assert body['capabilities']['openclaw_read_orchestration'] is True
     assert body['capabilities']['raw_vehicle_tx'] is False
     assert body['capabilities']['live_actuation'] is False
 
@@ -20,6 +23,7 @@ def test_integrated_workflow_and_durable_recording(tmp_path):
     c=TestClient(create_app(tmp_path))
     r=c.post('/api/vision/connect',json={'simulation':True})
     assert r.status_code==200 and r.json()['source']=='simulator'
+    assert c.get('/api/production/readiness').json()['vehicle_communication_proven'] is False
     time.sleep(.12)
     assert c.post('/api/vision/identify',json={'settle_s':0}).status_code==200
     assert c.post('/api/vision/learn').status_code==200
