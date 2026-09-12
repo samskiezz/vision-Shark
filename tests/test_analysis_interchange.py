@@ -6,8 +6,8 @@ from vision_shark.interchange import parse_candump,export_candump,parse_csv,expo
 from vision_shark.isotp_passive import PassiveIsoTpAssembler
 
 
-def frame(ts,arb,data,bus='can0',fd=False,brs=False,extended=False):
-    return Frame(ts_ns=ts,bus=bus,arbitration_id=arb,data=data,can_fd=fd,brs=brs,extended=extended)
+def frame(ts,arb,data,bus='can0',fd=False,brs=False,extended=False,rtr=False):
+    return Frame(ts_ns=ts,bus=bus,arbitration_id=arb,data=data,can_fd=fd,brs=brs,extended=extended,rtr=rtr)
 
 
 def test_fingerprint_is_deterministic_and_fuzzy():
@@ -28,6 +28,16 @@ def test_passive_isotp_single_and_multiframe():
     assert len(multi)==1 and multi[0].payload_hex=='62f19031323334353637' and multi[0].frame_count==2
 
 
+def test_passive_isotp_new_transaction_discards_stale_stream():
+    asm=PassiveIsoTpAssembler()
+    assert asm.consume(frame(1,0x7e8,'100a62f190313233'))==[]
+    result=asm.consume(frame(2,0x7e8,'037f2231'))
+    assert len(result)==2
+    assert result[0].complete is False and result[0].reason=='superseded_by_single_frame'
+    assert result[1].complete is True and result[1].payload_hex=='7f2231'
+    assert asm.consume(frame(3,0x7e8,'2134353637'))==[]
+
+
 def test_passive_isotp_extended_addressing_single_and_multiframe():
     asm=PassiveIsoTpAssembler(addressing='extended',address_extension=0xf1)
     one=asm.consume(frame(1,0x700,'f1037f2231'))
@@ -35,7 +45,6 @@ def test_passive_isotp_extended_addressing_single_and_multiframe():
     assert asm.consume(frame(2,0x700,'f1100962f1903132'))==[]
     multi=asm.consume(frame(3,0x700,'f1213334353637'))
     assert len(multi)==1 and multi[0].payload_hex=='62f190313233343536' and multi[0].frame_count==2
-    # A different extension is a different logical stream and is filtered when configured.
     assert asm.consume(frame(4,0x700,'f203010203'))==[]
 
 
@@ -61,6 +70,17 @@ def test_candump_csv_jsonl_roundtrip():
     assert [(x.arbitration_id,x.data,x.can_fd,x.brs,x.extended) for x in parsed]==[(x.arbitration_id,x.data,x.can_fd,x.brs,x.extended) for x in original]
     assert [x.model_dump() for x in parse_csv(export_csv(original))]==[x.model_dump() for x in original]
     assert [x.model_dump() for x in parse_jsonl(export_jsonl(original))]==[x.model_dump() for x in original]
+
+
+def test_candump_preserves_exact_nanoseconds_and_rtr():
+    text='(1757685234.123456789) can0 123#R\n'
+    parsed=parse_candump(text)
+    assert parsed[0].ts_ns==1_757_685_234_123_456_789
+    assert parsed[0].rtr is True and parsed[0].data==''
+    exported=export_candump(parsed)
+    assert '(1757685234.123456789)' in exported and '123#R' in exported
+    roundtrip=parse_candump(exported)[0]
+    assert roundtrip.ts_ns==parsed[0].ts_ns and roundtrip.rtr is True
 
 
 def test_candump_preserves_low_valued_extended_identifier():
