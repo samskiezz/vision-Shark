@@ -10,6 +10,7 @@ from .agent_policy import evaluate_emergency,evaluate_policy
 from .anomaly import compare_anomaly
 from .ecu_fingerprint import ecu_clock_hypotheses
 from .event_diff import event_bit_diff
+from .field_api import install_field_routes
 from .metrics import prometheus_metrics
 from .platform_match import match_platforms
 from .segmentation import segment_recording
@@ -92,3 +93,5 @@ def install_research_routes(app,runtime,store,audit,orchestrator):
     async def explicit_doip_connect(body:DoIPConnectBody):
         try:return await orchestrator.connect_doip_endpoint(body.endpoint,body.logical_address,body.interface,body.discovery_vin,body.eid,body.metadata)
         except (ValueError,RuntimeError,PermissionError,OSError) as exc:raise HTTPException(409,str(exc)) from exc
+
+    install_field_routes(app,store,audit)
