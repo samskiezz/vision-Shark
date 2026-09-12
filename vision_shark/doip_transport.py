@@ -3,6 +3,7 @@ from __future__ import annotations
 import socket
 import struct
 import time
+from typing import ClassVar
 
 DOIP_PORT=13400
 VERSION=0x02
@@ -45,7 +46,7 @@ class DoIPReadOnlyClient:
     It cannot change diagnostic session, unlock security, clear DTCs, perform IO
     control, run routines, download, transfer, reset, code or program ECUs.
     """
-    ALLOWED_UDS_SERVICES={0x19,0x22}
+    ALLOWED_UDS_SERVICES:ClassVar[frozenset[int]]=frozenset({0x19,0x22})
     def __init__(self,host:str,target_address:int,source_address:int=0x0e80,timeout:float=2.0):
         self.host=str(host);self.target_address=int(target_address);self.source_address=int(source_address);self.timeout=float(timeout);self.sock=None;self.routing_active=False;self.alive_checks=0
         if not 0<=self.target_address<=0xffff or not 0<=self.source_address<=0xffff:raise ValueError('DoIP logical address out of range')
@@ -68,7 +69,7 @@ class DoIPReadOnlyClient:
                 if response_code==0x11:raise DoIPError('routing activation requires confirmation; confirmation workflow is not implemented')
                 if response_code!=0x10:raise DoIPError(f'routing activation denied: 0x{response_code:02x}')
                 self.routing_active=True;return self
-        except Exception:
+        except (OSError,DoIPError,struct.error):
             self.close();raise
     def close(self):
         if self.sock:
