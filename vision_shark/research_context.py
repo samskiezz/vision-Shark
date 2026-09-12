@@ -24,6 +24,7 @@ ValidationState = Literal[
     "validated",
     "rejected",
 ]
+IncidentState = Literal["open", "inspected", "repaired", "closed", "unknown"]
 
 
 def _clean_id(value: str, label: str) -> str:
@@ -105,7 +106,10 @@ class SessionContext(BaseModel):
     @field_validator("modification_ids")
     @classmethod
     def validate_modification_ids(cls, values: list[str]) -> list[str]:
-        return [_clean_id(value, "modification id") for value in values]
+        result = [_clean_id(value, "modification id") for value in values]
+        if len(set(result)) != len(result):
+            raise ValueError("duplicate modification ids are not allowed")
+        return sorted(result)
 
     @field_validator("tyre_pressures_kpa")
     @classmethod
@@ -121,7 +125,7 @@ class SessionContext(BaseModel):
             if not 20 <= pressure <= 800:
                 raise ValueError("tyre pressure must be between 20 and 800 kPa")
             result[name] = pressure
-        return result
+        return dict(sorted(result.items()))
 
 
 class VehicleModification(BaseModel):
@@ -165,7 +169,10 @@ class ResearchClaim(BaseModel):
     @field_validator("source_refs")
     @classmethod
     def validate_source_refs(cls, values: list[str]) -> list[str]:
-        return [_clean_id(value, "source reference") for value in values]
+        result = [_clean_id(value, "source reference") for value in values]
+        if len(set(result)) != len(result):
+            raise ValueError("duplicate source references are not allowed")
+        return sorted(result)
 
     @field_validator("linked_recordings")
     @classmethod
@@ -173,7 +180,9 @@ class ResearchClaim(BaseModel):
         result = [int(value) for value in values]
         if any(value < 1 for value in result):
             raise ValueError("recording ids must be positive")
-        return result
+        if len(set(result)) != len(result):
+            raise ValueError("duplicate recording ids are not allowed")
+        return sorted(result)
 
 
 class ClaimEvent(BaseModel):
@@ -194,7 +203,7 @@ class Incident(BaseModel):
     context_window_ms: int = Field(default=30_000, ge=100, le=3_600_000)
     notes: str = Field(default="", max_length=6000)
     repair_evidence: list[dict] = Field(default_factory=list, max_length=128)
-    resolution_state: Literal["open", "inspected", "repaired", "closed", "unknown"] = "open"
+    resolution_state: IncidentState = "open"
 
     @field_validator("incident_id")
     @classmethod
@@ -205,6 +214,14 @@ class Incident(BaseModel):
     @classmethod
     def validate_vehicle_id(cls, value: str) -> str:
         return _clean_id(value, "vehicle id")
+
+
+class IncidentEvent(BaseModel):
+    state: IncidentState
+    note: str = Field(default="", max_length=6000)
+    evidence_refs: list[str] = Field(default_factory=list, max_length=256)
+    repair_evidence: list[dict] = Field(default_factory=list, max_length=128)
+    actor: str = Field(default="operator", min_length=1, max_length=100)
 
 
 class ResearchFeedback(BaseModel):
@@ -240,7 +257,7 @@ class ResearchFeedback(BaseModel):
             if not key or len(key) > 64 or not 0 <= score <= 10:
                 raise ValueError("feedback ratings must use names <=64 chars and scores from 0 to 10")
             result[key] = score
-        return result
+        return dict(sorted(result.items()))
 
 
 class RecordingCompareRequest(BaseModel):
@@ -339,8 +356,13 @@ class FieldResearchStore:
             "CREATE TABLE IF NOT EXISTS incidents("
             "incident_id TEXT PRIMARY KEY,vehicle_id TEXT NOT NULL,recording_id INTEGER,payload_json TEXT NOT NULL,sha256 TEXT NOT NULL,created_ns INTEGER NOT NULL);"
             "CREATE INDEX IF NOT EXISTS incidents_vehicle_idx ON incidents(vehicle_id,created_ns);"
+            "CREATE TABLE IF NOT EXISTS incident_events("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT,incident_id TEXT NOT NULL,event_json TEXT NOT NULL,created_ns INTEGER NOT NULL,"
+            "FOREIGN KEY(incident_id) REFERENCES incidents(incident_id));"
+            "CREATE INDEX IF NOT EXISTS incident_events_incident_idx ON incident_events(incident_id,id);"
             "CREATE TABLE IF NOT EXISTS research_feedback("
             "feedback_id TEXT PRIMARY KEY,vehicle_id TEXT NOT NULL,payload_json TEXT NOT NULL,sha256 TEXT NOT NULL,created_ns INTEGER NOT NULL);"
+            "CREATE INDEX IF NOT EXISTS research_feedback_vehicle_idx ON research_feedback(vehicle_id,created_ns);"
         )
         self._db.commit()
 
@@ -363,9 +385,9 @@ class FieldResearchStore:
                 values.append(value)
             columns.extend(["payload_json", "sha256", "created_ns"])
             values.extend([encoded, digest, time.time_ns()])
-            placeholders = ",".join("?" for _ in columns)
+            bind_marks = ",".join("?" for _ in columns)
             self._db.execute(
-                f"INSERT INTO {table}({','.join(columns)}) VALUES({placeholders})",
+                f"INSERT INTO {table}({','.join(columns)}) VALUES({bind_marks})",
                 tuple(values),
             )
             self._db.commit()
@@ -438,12 +460,23 @@ class FieldResearchStore:
 
     def put_claim(self, claim: ResearchClaim | dict) -> dict:
         value = claim if isinstance(claim, ResearchClaim) else ResearchClaim.model_validate(claim)
-        result = self._insert_immutable(
-            "research_claims",
-            "claim_id",
-            value.claim_id,
-            value.model_dump(mode="json"),
-        )
+        with self._lock:
+            if value.source_refs:
+                bind_marks = ",".join("?" for _ in value.source_refs)
+                rows = self._db.execute(
+                    f"SELECT source_id FROM research_sources WHERE source_id IN ({bind_marks})",
+                    tuple(value.source_refs),
+                ).fetchall()
+                known = {row[0] for row in rows}
+                missing = [source_id for source_id in value.source_refs if source_id not in known]
+                if missing:
+                    raise ValueError(f"research claim references unknown sources: {', '.join(missing)}")
+            result = self._insert_immutable(
+                "research_claims",
+                "claim_id",
+                value.claim_id,
+                value.model_dump(mode="json"),
+            )
         return {"claim_id": value.claim_id, **result}
 
     def add_claim_event(self, claim_id: str, event: ClaimEvent | dict) -> dict:
@@ -472,12 +505,12 @@ class FieldResearchStore:
                 "SELECT payload_json,sha256,created_ns FROM research_claims WHERE claim_id=?",
                 (claim_id,),
             ).fetchone()
+            if row is None:
+                return None
             events = self._db.execute(
                 "SELECT id,event_json,created_ns FROM claim_events WHERE claim_id=? ORDER BY id",
                 (claim_id,),
             ).fetchall()
-        if row is None:
-            return None
         claim = json.loads(row[0])
         event_rows = [
             {"event_id": item[0], "event": json.loads(item[1]), "created_ns": item[2]}
@@ -495,7 +528,7 @@ class FieldResearchStore:
     def list_claims(self) -> list[dict]:
         with self._lock:
             ids = [row[0] for row in self._db.execute("SELECT claim_id FROM research_claims ORDER BY claim_id").fetchall()]
-        return [self.get_claim(claim_id) for claim_id in ids]
+        return [item for claim_id in ids if (item := self.get_claim(claim_id)) is not None]
 
     def put_incident(self, incident: Incident | dict) -> dict:
         value = incident if isinstance(incident, Incident) else Incident.model_validate(incident)
@@ -508,19 +541,70 @@ class FieldResearchStore:
         )
         return {"incident_id": value.incident_id, **result}
 
+    def add_incident_event(self, incident_id: str, event: IncidentEvent | dict) -> dict:
+        incident_id = _clean_id(incident_id, "incident id")
+        value = event if isinstance(event, IncidentEvent) else IncidentEvent.model_validate(event)
+        encoded = _canonical(value.model_dump(mode="json"))
+        with self._lock:
+            exists = self._db.execute(
+                "SELECT 1 FROM incidents WHERE incident_id=?",
+                (incident_id,),
+            ).fetchone()
+            if not exists:
+                raise KeyError(incident_id)
+            created_ns = time.time_ns()
+            cur = self._db.execute(
+                "INSERT INTO incident_events(incident_id,event_json,created_ns) VALUES(?,?,?)",
+                (incident_id, encoded, created_ns),
+            )
+            self._db.commit()
+        return {
+            "event_id": int(cur.lastrowid),
+            "incident_id": incident_id,
+            "created_ns": created_ns,
+            "event": value.model_dump(mode="json"),
+        }
+
+    def get_incident(self, incident_id: str) -> dict | None:
+        incident_id = _clean_id(incident_id, "incident id")
+        with self._lock:
+            row = self._db.execute(
+                "SELECT payload_json,sha256,created_ns FROM incidents WHERE incident_id=?",
+                (incident_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            events = self._db.execute(
+                "SELECT id,event_json,created_ns FROM incident_events WHERE incident_id=? ORDER BY id",
+                (incident_id,),
+            ).fetchall()
+        incident = json.loads(row[0])
+        event_rows = [
+            {"event_id": item[0], "event": json.loads(item[1]), "created_ns": item[2]}
+            for item in events
+        ]
+        effective = event_rows[-1]["event"]["state"] if event_rows else incident["resolution_state"]
+        return {
+            "incident": incident,
+            "sha256": row[1],
+            "created_ns": row[2],
+            "events": event_rows,
+            "effective_resolution_state": effective,
+        }
+
     def list_incidents(self, vehicle_id: str | None = None) -> list[dict]:
         with self._lock:
             if vehicle_id is None:
-                rows = self._db.execute(
-                    "SELECT payload_json,sha256,created_ns FROM incidents ORDER BY created_ns DESC"
-                ).fetchall()
+                ids = [row[0] for row in self._db.execute(
+                    "SELECT incident_id FROM incidents ORDER BY created_ns DESC"
+                ).fetchall()]
             else:
                 vehicle_id = _clean_id(vehicle_id, "vehicle id")
-                rows = self._db.execute(
-                    "SELECT payload_json,sha256,created_ns FROM incidents WHERE vehicle_id=? ORDER BY created_ns DESC",
+                ids = [row[0] for row in self._db.execute(
+                    "SELECT incident_id FROM incidents WHERE vehicle_id=? ORDER BY created_ns DESC",
                     (vehicle_id,),
-                ).fetchall()
-        return [{"incident": json.loads(row[0]), "sha256": row[1], "created_ns": row[2]} for row in rows]
+                ).fetchall()]
+        return [item for incident_id in ids if (item := self.get_incident(incident_id)) is not None]
 
     def put_feedback(self, feedback: ResearchFeedback | dict) -> dict:
         value = feedback if isinstance(feedback, ResearchFeedback) else ResearchFeedback.model_validate(feedback)
@@ -532,6 +616,20 @@ class FieldResearchStore:
             (("vehicle_id", value.vehicle_id),),
         )
         return {"feedback_id": value.feedback_id, **result}
+
+    def list_feedback(self, vehicle_id: str | None = None) -> list[dict]:
+        with self._lock:
+            if vehicle_id is None:
+                rows = self._db.execute(
+                    "SELECT payload_json,sha256,created_ns FROM research_feedback ORDER BY created_ns,feedback_id"
+                ).fetchall()
+            else:
+                vehicle_id = _clean_id(vehicle_id, "vehicle id")
+                rows = self._db.execute(
+                    "SELECT payload_json,sha256,created_ns FROM research_feedback WHERE vehicle_id=? ORDER BY created_ns,feedback_id",
+                    (vehicle_id,),
+                ).fetchall()
+        return [{"feedback": json.loads(row[0]), "sha256": row[1], "created_ns": row[2]} for row in rows]
 
     def close(self) -> None:
         with self._lock:
@@ -555,18 +653,24 @@ def compare_contexts(baseline: dict | SessionContext | None, candidate: dict | S
             "comparable": False,
             "critical_mismatches": 1,
             "mismatches": [{"field": "session_context", "severity": "critical", "baseline": left, "candidate": right}],
+            "ambient_delta_c": None,
         }
     rules = [
         ("vehicle_id", 20, "critical"),
+        ("model", 10, "critical"),
         ("variant", 15, "critical"),
+        ("preproduction", 20, "critical"),
         ("model_year", 8, "high"),
         ("firmware", 15, "critical"),
         ("profile_pack_id", 8, "high"),
         ("profile_version", 8, "high"),
         ("tyres", 7, "high"),
+        ("tyre_pressures_kpa", 5, "high"),
         ("modification_ids", 7, "high"),
         ("purpose", 3, "medium"),
         ("terrain", 3, "medium"),
+        ("route", 5, "high"),
+        ("weather", 2, "medium"),
         ("payload_kg", 2, "medium"),
         ("trailer", 4, "high"),
     ]
@@ -587,16 +691,28 @@ def compare_contexts(baseline: dict | SessionContext | None, candidate: dict | S
                 }
             )
     ambient_delta = None
-    if left.get("ambient_c") is not None and right.get("ambient_c") is not None:
-        ambient_delta = abs(float(left["ambient_c"]) - float(right["ambient_c"]))
+    left_ambient = left.get("ambient_c")
+    right_ambient = right.get("ambient_c")
+    if (left_ambient is None) != (right_ambient is None):
+        penalty += 2
+        mismatches.append(
+            {
+                "field": "ambient_c",
+                "severity": "medium",
+                "baseline": left_ambient,
+                "candidate": right_ambient,
+            }
+        )
+    elif left_ambient is not None and right_ambient is not None:
+        ambient_delta = abs(float(left_ambient) - float(right_ambient))
         if ambient_delta > 10:
             penalty += 2
             mismatches.append(
                 {
                     "field": "ambient_c",
                     "severity": "medium",
-                    "baseline": left["ambient_c"],
-                    "candidate": right["ambient_c"],
+                    "baseline": left_ambient,
+                    "candidate": right_ambient,
                     "delta_c": ambient_delta,
                 }
             )
@@ -644,6 +760,10 @@ def matched_recording_report(recording_store, research_store: FieldResearchStore
         "baseline_id": baseline_id,
         "candidate_id": candidate_id,
         "context": context_report,
+        "context_evidence": {
+            "baseline_sha256": baseline_context["sha256"] if baseline_context else None,
+            "candidate_sha256": candidate_context["sha256"] if candidate_context else None,
+        },
         "baseline": _frame_summary(baseline_frames),
         "candidate": _frame_summary(candidate_frames),
         "anomaly": anomaly,
