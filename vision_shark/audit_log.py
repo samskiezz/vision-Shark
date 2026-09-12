@@ -40,12 +40,15 @@ class EventAuditLog:
 
     def verify(self)->dict:
         with self._lock:rows=self._db.execute('SELECT id,created_ns,category,event,payload_json,prev_hash,event_hash FROM events ORDER BY id').fetchall()
-        prev='0'*64
+        prev='0'*64;checked=0
         for r in rows:
-            payload=json.loads(r[4]);expected=hashlib.sha256(self._canonical(r[1],r[2],r[3],payload,prev)).hexdigest()
-            if r[5]!=prev or r[6]!=expected:return {'ok':False,'event_id':r[0],'events_checked':r[0]-1}
-            prev=r[6]
-        return {'ok':True,'events_checked':len(rows),'head_hash':prev}
+            try:payload=json.loads(r[4])
+            except json.JSONDecodeError:return {'ok':False,'event_id':r[0],'events_checked':checked,'reason':'invalid_payload_json'}
+            expected=hashlib.sha256(self._canonical(r[1],r[2],r[3],payload,prev)).hexdigest()
+            if r[5]!=prev:return {'ok':False,'event_id':r[0],'events_checked':checked,'reason':'previous_hash_mismatch'}
+            if r[6]!=expected:return {'ok':False,'event_id':r[0],'events_checked':checked,'reason':'event_hash_mismatch'}
+            prev=r[6];checked+=1
+        return {'ok':True,'events_checked':checked,'head_hash':prev}
 
     def close(self):
         with self._lock:self._db.close()
