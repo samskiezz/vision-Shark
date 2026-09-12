@@ -21,6 +21,114 @@ BO_ 291 VehicleStatus: 8 ECU
  SG_ Temperature : 16|8@1- (1,-40) [-40|215] "C" ECU
 '''
 
+FIBEX = '''<?xml version="1.0" encoding="UTF-8"?>
+<fx:FIBEX xmlns:fx="http://www.asam.net/xml/fbx"
+          xmlns:ho="http://www.asam.net/xml"
+          xmlns:can="http://www.asam.net/xml/fbx/can"
+          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+  <fx:PROJECT ID="visionSharkFixture">
+    <ho:SHORT-NAME>VisionSharkFixture</ho:SHORT-NAME>
+  </fx:PROJECT>
+  <fx:ELEMENTS>
+    <fx:CLUSTERS>
+      <fx:CLUSTER ID="cluster1">
+        <ho:SHORT-NAME>FixtureCAN</ho:SHORT-NAME>
+        <fx:PROTOCOL xsi:type="can:PROTOCOL-TYPE">CAN</fx:PROTOCOL>
+        <fx:CHANNEL-REFS>
+          <fx:CHANNEL-REF ID-REF="channel1"/>
+        </fx:CHANNEL-REFS>
+      </fx:CLUSTER>
+    </fx:CLUSTERS>
+    <fx:CHANNELS>
+      <fx:CHANNEL ID="channel1">
+        <ho:SHORT-NAME>CAN1</ho:SHORT-NAME>
+        <fx:FRAME-TRIGGERINGS>
+          <fx:FRAME-TRIGGERING ID="trigger1">
+            <fx:IDENTIFIER>
+              <fx:IDENTIFIER-VALUE>291</fx:IDENTIFIER-VALUE>
+            </fx:IDENTIFIER>
+            <fx:FRAME-REF ID-REF="frame1"/>
+          </fx:FRAME-TRIGGERING>
+        </fx:FRAME-TRIGGERINGS>
+      </fx:CHANNEL>
+    </fx:CHANNELS>
+    <fx:ECUS>
+      <fx:ECU ID="ecu1">
+        <ho:SHORT-NAME>FixtureECU</ho:SHORT-NAME>
+        <fx:OUTPUT-PORT>
+          <fx:FRAME-TRIGGERING-REF ID-REF="trigger1"/>
+        </fx:OUTPUT-PORT>
+        <fx:INPUT-PORT>
+          <fx:SIGNAL-INSTANCE-REF ID-REF="speedInstance"/>
+        </fx:INPUT-PORT>
+      </fx:ECU>
+    </fx:ECUS>
+    <fx:PDUS>
+      <fx:PDU ID="pdu1">
+        <ho:SHORT-NAME>VehicleStatus</ho:SHORT-NAME>
+        <fx:BYTE-LENGTH>8</fx:BYTE-LENGTH>
+        <fx:PDU-TYPE>APPLICATION</fx:PDU-TYPE>
+        <fx:SIGNAL-INSTANCES>
+          <fx:SIGNAL-INSTANCE ID="speedInstance">
+            <fx:BIT-POSITION>0</fx:BIT-POSITION>
+            <fx:IS-HIGH-LOW-BYTE-ORDER>false</fx:IS-HIGH-LOW-BYTE-ORDER>
+            <fx:SIGNAL-REF ID-REF="speedSignal"/>
+          </fx:SIGNAL-INSTANCE>
+        </fx:SIGNAL-INSTANCES>
+      </fx:PDU>
+    </fx:PDUS>
+    <fx:FRAMES>
+      <fx:FRAME ID="frame1">
+        <ho:SHORT-NAME>VehicleStatusFrame</ho:SHORT-NAME>
+        <fx:BYTE-LENGTH>8</fx:BYTE-LENGTH>
+        <fx:PDU-INSTANCES>
+          <fx:PDU-INSTANCE ID="pduInstance1">
+            <fx:PDU-REF ID-REF="pdu1"/>
+          </fx:PDU-INSTANCE>
+        </fx:PDU-INSTANCES>
+      </fx:FRAME>
+    </fx:FRAMES>
+    <fx:SIGNALS>
+      <fx:SIGNAL ID="speedSignal">
+        <ho:SHORT-NAME>Speed</ho:SHORT-NAME>
+        <fx:CODING-REF ID-REF="speedCoding"/>
+      </fx:SIGNAL>
+    </fx:SIGNALS>
+    <fx:PROCESSING-INFORMATION>
+      <fx:CODINGS>
+        <fx:CODING ID="speedCoding">
+          <ho:SHORT-NAME>SpeedCoding</ho:SHORT-NAME>
+          <ho:CODED-TYPE ho:BASE-DATA-TYPE="A_UINT16">
+            <ho:BIT-LENGTH>16</ho:BIT-LENGTH>
+          </ho:CODED-TYPE>
+          <ho:COMPU-METHODS>
+            <ho:COMPU-METHOD>
+              <ho:SHORT-NAME>SpeedLinear</ho:SHORT-NAME>
+              <ho:CATEGORY>LINEAR</ho:CATEGORY>
+              <ho:COMPU-INTERNAL-TO-PHYS>
+                <ho:COMPU-SCALES>
+                  <ho:COMPU-SCALE>
+                    <ho:COMPU-RATIONAL-COEFFS>
+                      <ho:COMPU-NUMERATOR>
+                        <ho:V>0</ho:V>
+                        <ho:V>0.1</ho:V>
+                      </ho:COMPU-NUMERATOR>
+                      <ho:COMPU-DENOMINATOR>
+                        <ho:V>1</ho:V>
+                      </ho:COMPU-DENOMINATOR>
+                    </ho:COMPU-RATIONAL-COEFFS>
+                  </ho:COMPU-SCALE>
+                </ho:COMPU-SCALES>
+              </ho:COMPU-INTERNAL-TO-PHYS>
+            </ho:COMPU-METHOD>
+          </ho:COMPU-METHODS>
+        </fx:CODING>
+      </fx:CODINGS>
+    </fx:PROCESSING-INFORMATION>
+  </fx:ELEMENTS>
+</fx:FIBEX>
+'''
+
 
 def _source_cluster():
     cluster = formats.loads(DBC.encode("utf-8"), import_type="dbc")
@@ -87,15 +195,23 @@ def test_exportable_reviewed_formats_normalize_to_dbc(tmp_path, fmt):
     assert all(item["runtime_dbc_validated"] for item in result["outputs"])
 
 
-def test_fibex_path_is_real_reader_even_if_exporter_is_not_available(tmp_path):
-    assert "load" in formats.supportedFormats["fibex"]
-    if "dump" not in formats.supportedFormats["fibex"]:
-        return
-    source = tmp_path / "source.xml"
-    _write_exportable_format(source, "fibex")
+def test_fibex_reader_normalizes_independent_can_fixture_to_dbc(tmp_path):
+    source = tmp_path / "fixture.xml"
+    source.write_text(FIBEX)
+
+    inspected = inspect_database(source, "fibex")
+    assert inspected["matrix_count"] == 1
+    assert inspected["frame_count"] == 1
+    assert inspected["signal_count"] == 1
+    matrix = inspected["matrices"][0]
+    assert matrix["frames"][0]["arbitration_id"] == 291
+    assert matrix["frames"][0]["signals"][0]["name"] == "Speed"
+    assert matrix["frames"][0]["signals"][0]["factor"] == "0.1"
+
     result = convert_to_dbc(source, "fibex", tmp_path / "out-fibex")
-    assert result["matrix_count"] >= 1
-    assert all(item["runtime_dbc_validated"] for item in result["outputs"])
+    assert result["matrix_count"] == 1
+    assert result["all_core_semantics_preserved"] is True
+    assert result["all_runtime_dbc_validated"] is True
 
 
 def test_xml_entity_and_ambiguous_xml_are_rejected_before_parser(tmp_path):
