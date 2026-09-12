@@ -7,6 +7,7 @@ from .knowledge import KnowledgeGraph
 from .autonomy import AutonomyRuntime
 from .adapter_discovery import discover_adapters
 from .doip_transport import DoIPReadOnlyClient,DoIPError,parse_uds_response
+from .fingerprint import fingerprint_frames
 
 class VisionOrchestrator:
     """One-button workflow owner. Engineering primitives stay behind this service."""
@@ -50,21 +51,32 @@ class VisionOrchestrator:
         async with self._lock:
             if self.session.source=='doip' and self.diagnostic_endpoint:return self.session.snapshot()
             if not self.runtime.running:raise ValueError('Connect first')
-            self.session.state=WorkflowState.IDENTIFYING_VEHICLE;await asyncio.sleep(max(0.,min(2.,settle_s)));frame_count=len(self.runtime.recent);ids=len({(f.bus,f.arbitration_id) for f in self.runtime.recent})
-            identity={'status':'observed_unknown' if self.runtime.source_kind!='simulator' else 'simulation','frame_count':frame_count,'message_ids':ids,'reason':'Exact vehicle identity requires matching evidence'}
-            self.session.vehicle=identity;self.session.confidence=0.;self.session.step('vehicle_fingerprint',status=identity['status']);self.knowledge.put('vehicle.identity',identity,0.,'passive-observation');self.session.state=WorkflowState.READY;self._audit('vehicle_identified',identity);return self.session.snapshot()
+            self.session.state=WorkflowState.IDENTIFYING_VEHICLE;await asyncio.sleep(max(0.,min(2.,settle_s)));frames=list(self.runtime.recent);fingerprint=fingerprint_frames(frames)
+            identity={'status':'observed_unknown' if self.runtime.source_kind!='simulator' else 'simulation','frame_count':fingerprint['frame_count'],'message_ids':fingerprint['message_count'],'fingerprint_sha256':fingerprint['sha256'],'reason':'Structural fingerprint observed; exact vehicle identity requires a vehicle-specific evidence match'}
+            self.session.vehicle=identity;self.session.confidence=0.;self.session.step('vehicle_fingerprint',status=identity['status'],sha256=fingerprint['sha256']);self.knowledge.put('vehicle.identity',identity,0.,'passive-observation');self.knowledge.put('vehicle.fingerprint',fingerprint,.99,'passive-structure',maturity='observed');self.session.state=WorkflowState.READY;self._audit('vehicle_fingerprint',{'sha256':fingerprint['sha256'],'frames':fingerprint['frame_count'],'messages':fingerprint['message_count']});return self.session.snapshot()
+    def _require_doip(self):
+        if self.session.source!='doip' or not self.diagnostic_endpoint or not self.diagnostic_proof or not self.diagnostic_proof.get('uds_exchange'):raise ValueError('A proven DoIP diagnostic connection is required')
     async def read_doip_dids(self,dids:list[int]):
         async with self._lock:
-            if self.session.source!='doip' or not self.diagnostic_endpoint or not self.diagnostic_proof or not self.diagnostic_proof.get('uds_exchange'):raise ValueError('A proven DoIP diagnostic connection is required')
-            clean=[]
+            self._require_doip();clean=[]
             for did in dids:
                 value=int(did)
                 if not 0<=value<=0xffff:raise ValueError('DID out of range')
                 if value not in clean:clean.append(value)
             if not clean or len(clean)>16:raise ValueError('Request 1 to 16 DIDs')
-            client=DoIPReadOnlyClient(self.diagnostic_endpoint['endpoint'],self.diagnostic_endpoint['logical_address'])
-            raw=await asyncio.to_thread(client.read_dids,clean);parsed=parse_uds_response(raw,0x22)
+            endpoint=self.diagnostic_endpoint
+            def read_once():
+                with DoIPReadOnlyClient(endpoint['endpoint'],endpoint['logical_address']) as client:return client.read_dids(clean)
+            raw=await asyncio.to_thread(read_once);parsed=parse_uds_response(raw,0x22)
             result={'dids':[f'{x:04X}' for x in clean],'response':parsed};self._audit('doip_read_dids',{'dids':result['dids'],'response_kind':parsed.get('kind'),'ok':parsed.get('ok')});return result
+    async def read_doip_dtcs(self,status_mask:int=0xff):
+        async with self._lock:
+            self._require_doip();mask=int(status_mask)
+            if not 0<=mask<=0xff:raise ValueError('DTC status mask out of range')
+            endpoint=self.diagnostic_endpoint
+            def read_once():
+                with DoIPReadOnlyClient(endpoint['endpoint'],endpoint['logical_address']) as client:return client.read_dtcs(mask)
+            raw=await asyncio.to_thread(read_once);parsed=parse_uds_response(raw,0x19);result={'status_mask':mask,'response':parsed};self._audit('doip_read_dtcs',{'status_mask':mask,'response_kind':parsed.get('kind'),'ok':parsed.get('ok')});return result
     async def learn_auto(self):
         async with self._lock:
             if self.session.source=='doip':return {'session':self.session.snapshot(),'report':{'status':'diagnostic_transport','frame_count':0,'message_inventory':[],'signal_hypotheses':[],'reason':'DoIP exposes diagnostics, not a raw CAN frame stream'},'knowledge_digest':self.knowledge.digest()}
