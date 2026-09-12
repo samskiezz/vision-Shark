@@ -30,16 +30,15 @@ def main(argv=None):
     if a.command=='probe':
         from .adapter_discovery import discover_adapters,discover_doip
         if a.timeout<=0 or a.timeout>10:p.error('--timeout must be >0 and <=10 seconds')
-        # Use the requested discovery timeout for DoIP while preserving passive SocketCAN/J2534 inventory.
         found=discover_adapters(include_doip=False,include_j2534=True);found.extend(x.as_dict() for x in discover_doip(a.timeout));found.sort(key=lambda x:(bool(x.get('usable')),x.get('confidence',0)),reverse=True)
         report={'adapters':found,'usable':sum(1 for x in found if x.get('usable',True)),'diagnostic_proofs':[]}
         if a.prove_diagnostics:
-            from .doip_transport import DoIPReadOnlyClient
+            from .doip_transport import DoIPError,DoIPReadOnlyClient
             for item in found:
                 if item.get('transport')!='doip' or not item.get('usable',True):continue
                 try:proof=DoIPReadOnlyClient(item['endpoint'],item['logical_address']).prove_readonly_session();report['diagnostic_proofs'].append({'endpoint':item['endpoint'],'logical_address':item['logical_address'],'ok':True,'proof':proof})
-                except Exception as exc:report['diagnostic_proofs'].append({'endpoint':item.get('endpoint'),'logical_address':item.get('logical_address'),'ok':False,'error':f'{type(exc).__name__}: {exc}'})
-        print(json.dumps(report,indent=2));
+                except (DoIPError,OSError,TimeoutError,ValueError) as exc:report['diagnostic_proofs'].append({'endpoint':item.get('endpoint'),'logical_address':item.get('logical_address'),'ok':False,'error':f'{type(exc).__name__}: {exc}'})
+        print(json.dumps(report,indent=2))
         if a.prove_diagnostics:return 0 if any(x.get('ok') for x in report['diagnostic_proofs']) else 2
         return 0 if report['usable'] else 2
     if a.command=='serve':
