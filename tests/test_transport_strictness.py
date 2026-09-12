@@ -19,6 +19,16 @@ class FakeSocket:
 
 def _wire(ptype,body):return _packet(ptype,body)
 
+def test_routing_activation_request_includes_reserved_bytes(monkeypatch):
+    body=struct.pack('!HHBI',0x0e80,0x1000,0x10,0)
+    fake=FakeSocket([_wire(0x0006,body)])
+    monkeypatch.setattr(socket,'create_connection',lambda *a,**k:fake)
+    client=DoIPReadOnlyClient('127.0.0.1',0x1000).connect()
+    version,inverse,ptype,length=struct.unpack('!BBHI',fake.sent[0][:8])
+    assert inverse==(version^0xff) and ptype==0x0005 and length==7
+    assert fake.sent[0][8:]==struct.pack('!HB4x',0x0e80,0)
+    client.close()
+
 def test_routing_confirmation_required_fails_closed(monkeypatch):
     body=struct.pack('!HHBI',0x0e80,0x1000,0x11,0)
     fake=FakeSocket([_wire(0x0006,body)])
