@@ -70,6 +70,19 @@ def test_doip_connect_sets_diagnostics_only_after_proof(monkeypatch,tmp_path):
     store.close()
 
 
+def test_disconnect_revokes_doip_diagnostic_authority(tmp_path):
+    app=create_app(tmp_path);orch=app.state.orchestrator
+    orch.session.source='doip';orch.session.capabilities['diagnostics_read']=True
+    orch.diagnostic_endpoint=_doip_candidate();orch.diagnostic_proof={'routing_active':True,'uds_exchange':True}
+    c=TestClient(app)
+    disconnected=c.post('/api/disconnect')
+    assert disconnected.status_code==200
+    state=disconnected.json()
+    assert state['source'] is None and state['diagnostic_endpoint'] is None and state['diagnostic_proof'] is None
+    assert state['capabilities']['diagnostics_read'] is False
+    assert c.post('/api/diagnostics/doip/dids',json={'dids':[0xF190]}).status_code==409
+
+
 def test_health_requires_observed_socketcan_frames():
     class RuntimeStub:
         def __init__(self,frames):self.frames=frames
