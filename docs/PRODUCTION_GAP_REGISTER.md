@@ -4,6 +4,8 @@
 
 - Durable SQLite WAL recording storage with capture-integrity/drop metadata.
 - Cross-platform IPv4 ENET/ISO 13400 discovery on Windows, macOS and Linux.
+- DoIP discovery is an explicit operator/probe action rather than a hidden side effect of passive connect; normal adapter inventory and passive auto-connect do not broadcast ISO 13400 discovery.
+- UDP discovery identity fields are treated as untrusted metadata; routed read-only UDS proof is required before diagnostic readiness or observed DoIP identity evidence is promoted.
 - DoIP sessions fail closed unless routing activation and a bounded read-only UDS exchange are proven.
 - Read-only DoIP DID/DTC requests; no security access, programming, coding, routine control, reset or arbitrary transmit API.
 - Disconnect invalidates stale DoIP endpoint/proof state so later diagnostic calls cannot silently reconnect to an old vehicle.
@@ -13,7 +15,11 @@
 - Passive ISO-TP reconstruction with normal and explicit extended addressing, independent address-extension streams, sequence/length/timeout validation and fail-closed supersession of abandoned streams.
 - Runtime DBC research decoding with differential cantools coverage for little-endian, signed, Motorola/big-endian, multiplexing, extended identifiers and >8-byte CAN-FD-length messages.
 - candump, CSV and JSONL import/export plus deterministic recording replay; candump nanosecond timestamps, low-valued extended IDs, CAN-FD flags and RTR semantics are preserved.
-- Content-free structural CAN fingerprinting and fuzzy comparison. Identity remains evidence-gated.
+- Vector ASC and PCAN TRC trace import paths for passive engineering captures.
+- Passive changed-byte sniffer, event-anchored bit discovery, timing/entropy anomaly comparison and ECU clock-skew clustering; inferred signals/ECU membership remain hypotheses.
+- Content-free structural CAN fingerprinting, platform signature comparison and fuzzy matching. Identity remains evidence-gated.
+- Decoder-based drive/charge/idle segmentation is available as an analysis hypothesis when a reviewed decoder is attached.
+- UDS DID/NRC standards reference and bounded agent-policy/emergency simulation surfaces are available without adding a transmit path.
 - Persistent knowledge store plus append-only SHA-256-chained operational audit log.
 - Durable OpenClaw provider-intent queue with explicit pending/acknowledged/completed/failed/cancelled lifecycle; queued intent is never presented as executed.
 - Bounded request bodies with absolute upload deadline.
@@ -27,7 +33,8 @@
 - Component/system-health reporting that distinguishes software readiness from physical vehicle communication proof; SocketCAN readiness requires observed traffic and DoIP readiness requires routed UDS proof.
 - Proof-driven operator UI showing adapter -> vehicle -> communications proof -> ready instead of treating discovery as successful vehicle communication.
 - CLI `doctor` and `probe --prove-diagnostics` for pre-trip adapter/network/DoIP validation.
-- Normal CLI server binding is loopback-only; LAN exposure requires a separately documented authenticated/TLS deployment rather than accidental `0.0.0.0` use.
+- Supported `vision-shark serve` path is loopback-only and authenticated: startup/admin token, optional viewer role, HttpOnly SameSite=Strict session cookie, CSRF enforcement, mandatory request-bound idempotency keys for state-changing API calls, protected operational APIs/metrics and security audit events. The lower-level `create_app()` factory remains an explicit embedded development/test surface rather than the supported production launch path.
+- LAN exposure remains outside the default CLI and requires a separately reviewed authenticated/TLS deployment.
 - Deterministic application shutdown disconnects active transport and closes recording, audit and provider-intent SQLite stores; lifecycle closure is regression-tested.
 - CI: pytest, compile, JavaScript syntax, Ruff, dependency resolution, implementation-marker rejection, pip-audit and CycloneDX SBOM.
 - Runtime repository fetching retired with explicit HTTP 410 migration responses.
@@ -36,9 +43,10 @@
 ## Deliberately detected but not falsely enabled
 
 - Windows J2534 providers can be discovered, but a generic live backend is not automatically enabled because installed-provider metadata alone does not prove listen-only/passive electrical behaviour.
-- MF4/Parquet are recognized interoperability gaps. Core release interchange is candump/CSV/JSONL; optional large-measurement format support should use a separately reviewed data dependency and streaming design.
+- MF4/Parquet are recognized interoperability gaps. Core release interchange is candump/CSV/JSONL plus reviewed ASC/TRC import; optional large-measurement format support should use a separately reviewed data dependency and streaming design.
 - ARXML/KCD/SYM/FIBEX/database conversion remains an optional interoperability layer rather than silently making canmatrix a mandatory runtime dependency.
 - OpenClaw provider intents are durable high-level handoffs; no fake lock/climate/phone/eCall/navigation backend is presented as physically executed until an actual provider acknowledges/completes the intent.
+- The embedded `create_app()` factory is intentionally not presented as the secured deployment boundary. Integrators embedding the ASGI app must reproduce the secured wrapper or provide an equivalent authenticated reverse-proxy/security layer.
 
 ## Remaining software integration work
 
@@ -50,6 +58,7 @@ These can be implemented without inventing vehicle facts, but they are not requi
 - Real navigation, phone/eCall, health-device and vehicle-convenience providers behind the existing durable OpenClaw intent interface.
 - Signed external vehicle-profile/evidence distribution and multi-vehicle fleet synchronization.
 - Full VSS/KUKSA wire-protocol interoperability; the current semantic broker implements the internal provider/broker model but is not a KUKSA server.
+- Hardened authenticated/TLS LAN deployment profile if remote operator access becomes a product requirement.
 
 ## Evidence gates software cannot truthfully invent
 
