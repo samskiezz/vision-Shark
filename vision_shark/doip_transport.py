@@ -47,21 +47,27 @@ class DoIPReadOnlyClient:
     """
     ALLOWED_UDS_SERVICES={0x19,0x22}
     def __init__(self,host:str,target_address:int,source_address:int=0x0e80,timeout:float=2.0):
-        self.host=str(host);self.target_address=int(target_address);self.source_address=int(source_address);self.timeout=float(timeout);self.sock=None;self.routing_active=False
+        self.host=str(host);self.target_address=int(target_address);self.source_address=int(source_address);self.timeout=float(timeout);self.sock=None;self.routing_active=False;self.alive_checks=0
         if not 0<=self.target_address<=0xffff or not 0<=self.source_address<=0xffff:raise ValueError('DoIP logical address out of range')
         if self.timeout<=0 or self.timeout>30:raise ValueError('DoIP timeout must be >0 and <=30 seconds')
+    def _answer_alive_check(self):
+        if not self.sock:raise DoIPError('alive check received without active socket')
+        self.sock.sendall(_packet(0x0008,struct.pack('!H',self.source_address)));self.alive_checks+=1
     def connect(self):
         self.close();s=socket.create_connection((self.host,DOIP_PORT),timeout=self.timeout);s.settimeout(self.timeout);self.sock=s
         try:
             s.sendall(_packet(0x0005,struct.pack('!HB',self.source_address,0x00)))
-            ptype,body=_recv(s)
-            if ptype!=0x0006 or len(body)<5:raise DoIPError('routing activation response missing')
-            client_addr,entity_addr,response_code=struct.unpack('!HHB',body[:5])
-            if client_addr!=self.source_address:raise DoIPError('routing activation client logical address mismatch')
-            if entity_addr!=self.target_address:raise DoIPError('routing activation entity logical address mismatch')
-            if response_code==0x11:raise DoIPError('routing activation requires confirmation; confirmation workflow is not implemented')
-            if response_code!=0x10:raise DoIPError(f'routing activation denied: 0x{response_code:02x}')
-            self.routing_active=True;return self
+            while True:
+                ptype,body=_recv(s)
+                if ptype==0x0007:
+                    self._answer_alive_check();continue
+                if ptype!=0x0006 or len(body)<5:raise DoIPError('routing activation response missing')
+                client_addr,entity_addr,response_code=struct.unpack('!HHB',body[:5])
+                if client_addr!=self.source_address:raise DoIPError('routing activation client logical address mismatch')
+                if entity_addr!=self.target_address:raise DoIPError('routing activation entity logical address mismatch')
+                if response_code==0x11:raise DoIPError('routing activation requires confirmation; confirmation workflow is not implemented')
+                if response_code!=0x10:raise DoIPError(f'routing activation denied: 0x{response_code:02x}')
+                self.routing_active=True;return self
         except Exception:
             self.close();raise
     def close(self):
@@ -79,6 +85,8 @@ class DoIPReadOnlyClient:
         self.sock.sendall(_packet(0x8001,struct.pack('!HH',self.source_address,self.target_address)+payload))
         while True:
             ptype,body=_recv(self.sock)
+            if ptype==0x0007:
+                self._answer_alive_check();continue
             if ptype==0x8003:raise DoIPError('diagnostic message rejected by DoIP gateway')
             if ptype!=0x8001:continue
             if len(body)<4:raise DoIPError('short diagnostic response')
@@ -95,15 +103,16 @@ class DoIPReadOnlyClient:
     def prove_readonly_session(self)->dict:
         """Prove routing plus one standard identification read without guessing OEM DIDs.
 
-        DID F190 (VIN) is used only as a standards-based probe. A negative UDS
-        response still proves that DoIP routing and diagnostic message exchange work.
+        DID F190 (VIN) is used only as a standards-based probe. A positive or
+        standards-compliant negative UDS response proves routed diagnostic exchange.
         """
         started=time.monotonic_ns();self.connect()
         try:
             response=self.read_dids([0xF190]);parsed=parse_uds_response(response,0x22);vin=None
+            uds_exchange=parsed.get('kind') in {'positive_response','negative_response'}
             if parsed['ok'] and len(response)>=3 and response[1:3]==b'\xf1\x90':
                 value=response[3:].rstrip(b'\x00\xff')
                 try:vin=value.decode('ascii').strip() or None
                 except UnicodeDecodeError:vin=None
-            return {'routing_active':True,'uds_exchange':True,'probe_did':'F190','response':parsed,'vin':vin,'latency_ms':round((time.monotonic_ns()-started)/1e6,3)}
+            return {'routing_active':True,'uds_exchange':uds_exchange,'probe_did':'F190','response':parsed,'vin':vin,'alive_checks':self.alive_checks,'latency_ms':round((time.monotonic_ns()-started)/1e6,3)}
         finally:self.close()
