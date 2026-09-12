@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "vision-shark-app"
-version = "0.7.0"
-description = "Local-first vehicle observation, evidence and reverse-engineering application"
+version = "0.8.0"
+description = "Local-first passive vehicle intelligence, evidence, learning and shadow-autonomy platform"
 requires-python = ">=3.11"
 dependencies = [
   "fastapi==0.116.1",
@@ -15,6 +15,9 @@ dependencies = [
   "argon2-cffi==25.1.0",
   "python-multipart==0.0.20",
 ]
+
+[project.optional-dependencies]
+dev = ["pytest==8.4.1", "httpx==0.28.1"]
 
 [project.scripts]
 vision-shark = "vision_shark.main:cli"
