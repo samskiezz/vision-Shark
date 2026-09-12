@@ -17,6 +17,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=9.0.3,<10", "httpx>=0.28.1,<1"]
+analytics = ["pyarrow>=18,<24"]
 
 [project.scripts]
 vision-shark = "vision_shark.main:cli"
