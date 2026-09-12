@@ -1,4 +1,4 @@
-import argparse,json,os,platform,shutil,socket,sys
+import argparse,json,os,platform,secrets,shutil,socket,sys
 from pathlib import Path
 from . import __version__
 
@@ -16,6 +16,7 @@ def _doctor_report():
         'linux_ip_tool':bool(shutil.which('ip')),
         'j2534_providers':[{'interface':x.interface,'endpoint':x.endpoint,'metadata':x.metadata} for x in j2534],
         'vehicle_validation':'not_performed',
+        'server_security':'token session + role + CSRF + idempotency on vision-shark serve',
         'next_step':'connect the OBD adapter and vehicle, then run vision-shark probe --prove-diagnostics',
     }
 
@@ -42,10 +43,18 @@ def main(argv=None):
         if a.prove_diagnostics:return 0 if any(x.get('ok') for x in report['diagnostic_proofs']) else 2
         return 0 if report['usable'] else 2
     if a.command=='serve':
-        if a.host not in ('127.0.0.1','localhost','::1'):p.error('This build defaults to loopback; use the documented TLS deployment for LAN access')
-        from .api import create_app
+        if a.host not in ('127.0.0.1','localhost','::1'):p.error('This build is loopback-only; use a separately authenticated/TLS deployment for LAN access')
+        admin_token=os.getenv('VISION_API_TOKEN')
+        generated=not bool(admin_token)
+        if generated:admin_token=secrets.token_urlsafe(32)
+        viewer_token=os.getenv('VISION_VIEWER_TOKEN') or None
+        from .secure_app import create_secured_app
         import uvicorn
-        print(f'Vision Shark {__version__} | http://{a.host}:{a.port}',flush=True);uvicorn.run(create_app(Path(a.data_dir)),host=a.host,port=a.port,server_header=False);return 0
+        print(f'Vision Shark {__version__} | http://{a.host}:{a.port}',flush=True)
+        if generated:print(f'Admin access token (shown once): {admin_token}',flush=True)
+        else:print('Admin access token loaded from VISION_API_TOKEN.',flush=True)
+        if viewer_token:print('Optional viewer role enabled from VISION_VIEWER_TOKEN.',flush=True)
+        uvicorn.run(create_secured_app(Path(a.data_dir),admin_token,viewer_token),host=a.host,port=a.port,server_header=False);return 0
     return 1
 
 def cli():raise SystemExit(main())
