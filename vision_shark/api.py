@@ -13,6 +13,7 @@ from .adapter_discovery import discover_adapters
 from .audit_log import EventAuditLog
 from .fingerprint import fingerprint_frames
 from .health import build_health_report
+from .http_security import ApiSecurityMiddleware,SecurityManager,install_security_routes
 from .intent_broker import IntentBroker
 from .interchange import dump_frames,load_frames
 from .isotp_passive import PassiveIsoTpAssembler
@@ -47,7 +48,7 @@ class ShadowBody(BaseModel):
     sensor_age_s:float=Field(default=0,ge=0,le=60);model_latency_ms:float=Field(default=0,ge=0,le=10000);calibration_valid:bool=True
 
 def create_app(data_dir:Path|str='data'):
-    root=Path(data_dir);store=RecordingStore(root);gate=ProductionGate(root);audit=EventAuditLog(root);intents=IntentBroker(root,audit);runtime=Runtime(storage=store);orchestrator=VisionOrchestrator(runtime,audit=audit)
+    root=Path(data_dir);store=RecordingStore(root);gate=ProductionGate(root);audit=EventAuditLog(root);intents=IntentBroker(root,audit);runtime=Runtime(storage=store);orchestrator=VisionOrchestrator(runtime,audit=audit);security=SecurityManager()
     @asynccontextmanager
     async def lifespan(_app):
         try:yield
@@ -55,6 +56,7 @@ def create_app(data_dir:Path|str='data'):
             try:await orchestrator.disconnect_auto()
             finally:intents.close();audit.close();store.close()
     app=FastAPI(title='Vision Shark Gateway',version=__version__,docs_url=None,redoc_url=None,lifespan=lifespan)
+    app.add_middleware(ApiSecurityMiddleware,manager=security,audit=audit)
     app.add_middleware(RequestBodyDeadlineMiddleware,max_body_bytes=8*1024*1024,deadline_s=15.0)
     readiness_provider=lambda:gate.evaluate(orchestrator.status())
     def queue_provider(category,action,provider):
@@ -66,12 +68,12 @@ def create_app(data_dir:Path|str='data'):
     emergency_actions={a:queue_provider('emergency',a,emergency_providers.get(a,'emergency_provider')) for a in EMERGENCY_ACTIONS if a not in NAVIGATION_ACTIONS}
     openclaw=OpenClawBridge(readers={'vision_status':orchestrator.status,'production_readiness':readiness_provider,'recordings':store.list_recordings,'knowledge':orchestrator.knowledge.snapshot,'pending_intents':lambda:intents.list(100,'pending')},convenience=convenience,navigation=navigation,emergency=emergency_actions)
     emergency=EmergencyOrchestrator()
-    app.state.runtime=runtime;app.state.store=store;app.state.audit=audit;app.state.intents=intents;app.state.orchestrator=orchestrator;app.state.openclaw=openclaw;app.state.emergency=emergency
-    install_research_routes(app,runtime,store,audit,orchestrator)
+    app.state.runtime=runtime;app.state.store=store;app.state.audit=audit;app.state.intents=intents;app.state.orchestrator=orchestrator;app.state.openclaw=openclaw;app.state.emergency=emergency;app.state.security=security
+    install_security_routes(app,security,audit);install_research_routes(app,runtime,store,audit,orchestrator)
     web=Path(__file__).parent/'web'
 
     @app.get('/health')
-    def health():return {'status':'ok','version':__version__,'mode':gate.PRODUCT_SCOPE,'raw_vehicle_tx':False,'shadow_autonomy':True,'doip_discovery':'explicit_opt_in','openclaw_orchestration':True}
+    def health():return {'status':'ok','version':__version__,'mode':gate.PRODUCT_SCOPE,'raw_vehicle_tx':False,'shadow_autonomy':True,'doip_discovery':'explicit_opt_in','openclaw_orchestration':True,'http_security':'enabled' if security.enabled else 'disabled_explicitly'}
     @app.get('/api/system/health')
     def system_health():return build_health_report(runtime,orchestrator,audit)
     @app.get('/api/production/readiness')
