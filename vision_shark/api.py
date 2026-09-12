@@ -14,7 +14,8 @@ from .live_decoder import LiveDecoder
 from .orchestrator import VisionOrchestrator
 from .middleware import RequestBodyDeadlineMiddleware
 from .audit_log import EventAuditLog
-from .openclaw import OpenClawBridge,EmergencyObservation,EmergencyOrchestrator
+from .intent_broker import IntentBroker
+from .openclaw import OpenClawBridge,EmergencyObservation,EmergencyOrchestrator,CONVENIENCE_ACTIONS,NAVIGATION_ACTIONS,EMERGENCY_ACTIONS
 from .health import build_health_report
 from .fingerprint import fingerprint_frames
 from .interchange import load_frames,dump_frames
@@ -31,6 +32,7 @@ class DiagnosticDtcBody(BaseModel):status_mask:int=Field(default=0xff,ge=0,le=25
 class ImportCaptureBody(BaseModel):format:str=Field(min_length=1,max_length=16);content:str=Field(max_length=4*1024*1024);metadata:dict=Field(default_factory=dict)
 class OpenClawReadBody(BaseModel):name:str=Field(min_length=1,max_length=64)
 class OpenClawActionBody(BaseModel):action:str=Field(min_length=1,max_length=64);arguments:dict=Field(default_factory=dict);emergency:bool=False
+class IntentStateBody(BaseModel):state:str=Field(min_length=1,max_length=32);result:dict|None=None
 class EmergencyBody(BaseModel):
     driver_responsive:bool|None=None
     medical_alarm:bool=False;crash_detected:bool=False;severe_driver_monitoring_alarm:bool=False;user_requested_help:bool=False;location_available:bool=False
@@ -44,19 +46,33 @@ class ShadowBody(BaseModel):
     calibration_valid:bool=True
 
 def create_app(data_dir:Path|str='data'):
-    root=Path(data_dir);store=RecordingStore(root);gate=ProductionGate(root);audit=EventAuditLog(root)
+    root=Path(data_dir);store=RecordingStore(root);gate=ProductionGate(root);audit=EventAuditLog(root);intents=IntentBroker(root,audit)
     app=FastAPI(title='Vision Shark Gateway',version=__version__,docs_url=None,redoc_url=None)
     app.add_middleware(RequestBodyDeadlineMiddleware,max_body_bytes=4*1024*1024,deadline_s=15.0)
     runtime=Runtime(storage=store);orchestrator=VisionOrchestrator(runtime,audit=audit)
     readiness_provider=lambda:gate.evaluate(orchestrator.status())
+    def queue_provider(category,action,provider):
+        def enqueue(**arguments):return intents.enqueue(category,action,provider,arguments)
+        return enqueue
+    convenience={a:queue_provider('convenience',a,'vehicle_convenience_provider') for a in CONVENIENCE_ACTIONS}
+    navigation={a:queue_provider('navigation',a,'navigation_provider') for a in NAVIGATION_ACTIONS}
+    emergency_providers={
+        'call_emergency_services':'emergency_services_provider',
+        'notify_emergency_contact':'emergency_contact_provider',
+        'share_location':'telematics_provider',
+        'request_safe_stop':'validated_vehicle_controller',
+        'request_minimum_risk':'validated_vehicle_controller',
+    }
+    emergency_actions={a:queue_provider('emergency',a,emergency_providers.get(a,'emergency_provider')) for a in EMERGENCY_ACTIONS if a not in NAVIGATION_ACTIONS}
     openclaw=OpenClawBridge(readers={
         'vision_status':orchestrator.status,
         'production_readiness':readiness_provider,
         'recordings':store.list_recordings,
         'knowledge':orchestrator.knowledge.snapshot,
-    })
+        'pending_intents':lambda:intents.list(100,'pending'),
+    },convenience=convenience,navigation=navigation,emergency=emergency_actions)
     emergency=EmergencyOrchestrator()
-    app.state.runtime=runtime;app.state.store=store;app.state.audit=audit;app.state.orchestrator=orchestrator;app.state.openclaw=openclaw;app.state.emergency=emergency;web=Path(__file__).parent/'web'
+    app.state.runtime=runtime;app.state.store=store;app.state.audit=audit;app.state.intents=intents;app.state.orchestrator=orchestrator;app.state.openclaw=openclaw;app.state.emergency=emergency;web=Path(__file__).parent/'web'
     @app.get('/health')
     def health():return {'status':'ok','version':__version__,'mode':gate.PRODUCT_SCOPE,'raw_vehicle_tx':False,'shadow_autonomy':True,'doip_discovery':True,'openclaw_orchestration':True}
     @app.get('/api/system/health')
@@ -109,7 +125,25 @@ def create_app(data_dir:Path|str='data'):
         audit.append('openclaw','action',{'action':body.action,'emergency':body.emergency,'status':result.get('status'),'decision':result.get('decision')});return result
     @app.post('/api/openclaw/emergency/evaluate')
     def openclaw_emergency(body:EmergencyBody):
-        result=emergency.evaluate(EmergencyObservation(**body.model_dump()));audit.append('openclaw','emergency_evaluated',{'observation':body.model_dump(),'state':result['state'],'actions':[x['action'] for x in result['actions']]});return result
+        result=emergency.evaluate(EmergencyObservation(**body.model_dump()));dispatch=[]
+        if result['state']=='emergency':
+            for item in result['actions']:
+                try:dispatch.append(openclaw.execute(item['action'],{},True))
+                except PermissionError as exc:dispatch.append({'action':item['action'],'status':'denied','error':str(exc)})
+        result['dispatch']=dispatch;audit.append('openclaw','emergency_evaluated',{'observation':body.model_dump(),'state':result['state'],'actions':[x['action'] for x in result['actions']],'dispatch_status':[x.get('status') for x in dispatch]});return result
+    @app.get('/api/intents')
+    def list_intents(limit:int=100,state:str|None=None):
+        try:return {'intents':intents.list(limit,state)}
+        except ValueError as e:raise HTTPException(400,str(e)) from e
+    @app.get('/api/intents/{intent_id}')
+    def get_intent(intent_id:str):
+        try:return intents.get(intent_id)
+        except KeyError as e:raise HTTPException(404,str(e)) from e
+    @app.post('/api/intents/{intent_id}/state')
+    def update_intent(intent_id:str,body:IntentStateBody):
+        try:return intents.update(intent_id,body.state,body.result)
+        except KeyError as e:raise HTTPException(404,str(e)) from e
+        except ValueError as e:raise HTTPException(409,str(e)) from e
     @app.get('/api/audit')
     def audit_events(limit:int=100):return {'events':audit.list(limit)}
     @app.get('/api/audit/verify')
