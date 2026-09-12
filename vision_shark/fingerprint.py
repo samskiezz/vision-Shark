@@ -22,7 +22,8 @@ def fingerprint_frames(frames:Iterable[Frame])->dict:
     Payload bytes are intentionally excluded. ``capture_sha256`` identifies this
     particular observation including counts/timing. ``structural_sha256`` excludes
     count/timing so repeated captures of the same observed message structure remain
-    comparable. Neither hash alone proves a vehicle model.
+    comparable. ``sha256`` is a compatibility alias for the structural digest.
+    Neither digest alone proves a vehicle model.
     """
     rows=list(frames);groups=defaultdict(list)
     for frame in rows:
@@ -38,7 +39,7 @@ def fingerprint_frames(frames:Iterable[Frame])->dict:
     capture={'version':2,'frame_count':len(rows),'message_count':len(messages),'duration_ms':None if first is None or last is None else round((last-first)/1e6,3),'messages':messages}
     structural=[{'bus':m['bus'],'id':m['id'],'extended':m['extended'],'can_fd':m['can_fd'],'lengths':m['lengths']} for m in messages]
     capture_sha=_digest(capture);structural_sha=_digest({'version':2,'messages':structural})
-    return {**capture,'capture_sha256':capture_sha,'structural_sha256':structural_sha,'sha256':capture_sha}
+    return {**capture,'capture_sha256':capture_sha,'structural_sha256':structural_sha,'sha256':structural_sha}
 
 
 def compare_fingerprints(observed:dict,reference:dict,ignore_bus:bool=False)->dict:
