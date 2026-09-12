@@ -48,14 +48,14 @@ class SocketCanSource:
   self.sock.settimeout(.15);self.sock.bind((self.interface,))
  def open(self):return None
  def read_batch(self):
-  raw,anc,_,_=self.sock.recvmsg(72,128);ts_ns=time.monotonic_ns()
+  raw,anc,_,_=self.sock.recvmsg(72,128);ts_ns=time.monotonic_ns();mono_now=time.monotonic_ns();real_now=time.time_ns();rt_to_mono=mono_now-real_now
   for level,ctype,data in anc:
    if level==socket.SOL_SOCKET and ctype==SO_RXQ_OVFL and len(data)>=4:
     total=struct.unpack('=I',data[:4])[0];delta=(total-self._last_overflow)&0xffffffff;self.dropped+=delta;self._last_overflow=total
    elif level==socket.SOL_SOCKET and ctype==SO_TIMESTAMPNS and len(data)>=16:
-    sec,nsec=struct.unpack('=qq',data[:16]);ts_ns=sec*1_000_000_000+nsec
+    sec,nsec=struct.unpack('=qq',data[:16]);ts_ns=sec*1_000_000_000+nsec+rt_to_mono
   can_id,length,flags,_,_=struct.unpack('=IBBBB',raw[:8]);fd=len(raw)==72;rtr=bool(can_id&CAN_RTR_FLAG)
-  return [Frame(ts_ns=ts_ns,bus=self.interface,arbitration_id=can_id&0x1fffffff,data='' if rtr else raw[8:8+length].hex(),can_fd=fd,extended=bool(can_id&CAN_EFF_FLAG),rtr=rtr,error=bool(can_id&CAN_ERR_FLAG),brs=fd and bool(flags&1),esi=fd and bool(flags&2))]
+  return [Frame(ts_ns=max(0,ts_ns),bus=self.interface,arbitration_id=can_id&0x1fffffff,data='' if rtr else raw[8:8+length].hex(),can_fd=fd,extended=bool(can_id&CAN_EFF_FLAG),rtr=rtr,error=bool(can_id&CAN_ERR_FLAG),brs=fd and bool(flags&1),esi=fd and bool(flags&2))]
  def read(self,timeout=.25):
   self.sock.settimeout(timeout)
   try:return self.read_batch()[0]
