@@ -1,0 +1,42 @@
+from __future__ import annotations
+import asyncio
+from .domain import ConnectRequest
+from .session import VehicleSession,WorkflowState
+from .transports import list_can_interfaces
+from .learning import LearningEngine
+from .knowledge import KnowledgeGraph
+from .autonomy import AutonomyRuntime
+
+class VisionOrchestrator:
+    """One-button workflow owner. Engineering primitives stay behind this service."""
+    def __init__(self,runtime):
+        self.runtime=runtime;self.session=VehicleSession();self.learning=LearningEngine();self.knowledge=KnowledgeGraph();self.autonomy=AutonomyRuntime();self._lock=asyncio.Lock()
+    async def connect_auto(self,simulation=False):
+        async with self._lock:
+            self.session=VehicleSession(state=WorkflowState.DISCOVERING_HARDWARE);self.session.step('discover_hardware')
+            if simulation:
+                self.runtime.connect_simulator();self.session.source='simulator';self.session.interface='simulator';self.session.step('simulation_selected')
+            else:
+                interfaces=list_can_interfaces()
+                candidates=[i for i in interfaces if i.get('eligible')]
+                if not candidates:
+                    self.session.state=WorkflowState.ERROR;self.session.error='No passive CAN/CAN-FD interface detected';self.session.step('discover_hardware','failed');return self.session.snapshot()
+                chosen=candidates[0];self.session.state=WorkflowState.INITIALISING_INTERFACE;self.session.step('select_interface',name=chosen['name']);self.runtime.connect_socketcan(chosen['name']);self.session.source='socketcan';self.session.interface=chosen['name']
+            self.session.state=WorkflowState.PASSIVE_CAPTURE;self.session.step('passive_capture_started');self.session.state=WorkflowState.READY
+            return self.session.snapshot()
+    async def identify_auto(self,settle_s=.25):
+        async with self._lock:
+            if not self.runtime.running:raise ValueError('Connect first')
+            self.session.state=WorkflowState.IDENTIFYING_VEHICLE;await asyncio.sleep(max(0.,min(2.,settle_s)))
+            frame_count=len(self.runtime.recent);ids=len({(f.bus,f.arbitration_id) for f in self.runtime.recent})
+            identity={'status':'observed_unknown' if self.runtime.source_kind!='simulator' else 'simulation','frame_count':frame_count,'message_ids':ids,'reason':'Exact vehicle identity requires matching evidence'}
+            self.session.vehicle=identity;self.session.confidence=0.;self.session.step('vehicle_fingerprint',status=identity['status']);self.knowledge.put('vehicle.identity',identity,0.,'passive-observation');self.session.state=WorkflowState.READY
+            return self.session.snapshot()
+    async def learn_auto(self):
+        async with self._lock:
+            if not self.runtime.running:raise ValueError('Connect first')
+            self.session.state=WorkflowState.LEARNING;report=self.learning.analyze(list(self.runtime.recent));self.session.step('passive_learning',frames=report['frame_count'],messages=len(report['message_inventory']),hypotheses=len(report['signal_hypotheses']));self.knowledge.put('learning.latest',report,.5,'passive-learning');self.session.state=WorkflowState.READY
+            return {'session':self.session.snapshot(),'report':report,'knowledge_digest':self.knowledge.digest()}
+    def shadow_autonomy(self,payload):return self.autonomy.run(**payload)
+    def status(self):
+        out=self.session.snapshot();out['runtime']=self.runtime.status();out['knowledge_digest']=self.knowledge.digest();return out
