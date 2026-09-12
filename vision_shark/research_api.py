@@ -12,7 +12,6 @@ from .sniffer import sniffer_view
 from .trace_import import load_trace
 from .uds_reference import reference as uds_reference
 
-
 class EventDiffBody(BaseModel):
     events:list[dict]=Field(default_factory=list,max_length=1000)
     window_ms:float=Field(default=500.0,gt=0,le=60_000)
@@ -26,16 +25,23 @@ class DiscoveryBody(BaseModel):
     include_doip:bool=False
     include_j2534:bool=True
 
+class DoIPConnectBody(BaseModel):
+    endpoint:str=Field(min_length=1,max_length=255)
+    logical_address:int=Field(ge=0,le=65535)
+    interface:str='ethernet'
+    discovery_vin:str|None=Field(default=None,max_length=32)
+    eid:str|None=Field(default=None,max_length=64)
+    metadata:dict=Field(default_factory=dict)
 
-def install_research_routes(app,runtime,store,audit):
+
+def install_research_routes(app,runtime,store,audit,orchestrator):
     @app.get('/api/sniffer')
     def sniffer(changed_only:bool=False,changed_within_ms:float=1000.0):
         try:return sniffer_view(list(runtime.recent),changed_only,changed_within_ms)
         except ValueError as exc:raise HTTPException(400,str(exc)) from exc
 
     @app.post('/api/recordings/{recording_id}/event-diff')
-    def recording_event_diff(recording_id:int,body:EventDiffBody):
-        return event_bit_diff(store.load_frames(recording_id),body.events,body.window_ms)
+    def recording_event_diff(recording_id:int,body:EventDiffBody):return event_bit_diff(store.load_frames(recording_id),body.events,body.window_ms)
 
     @app.get('/api/recordings/{recording_id}/ecu-clusters')
     def recording_ecu_clusters(recording_id:int,tolerance_ppm:float=250.0):
@@ -43,8 +49,7 @@ def install_research_routes(app,runtime,store,audit):
         except ValueError as exc:raise HTTPException(400,str(exc)) from exc
 
     @app.get('/api/recordings/{recording_id}/anomalies')
-    def recording_anomalies(recording_id:int,baseline_id:int):
-        return compare_anomaly(store.load_frames(baseline_id),store.load_frames(recording_id))
+    def recording_anomalies(recording_id:int,baseline_id:int):return compare_anomaly(store.load_frames(baseline_id),store.load_frames(recording_id))
 
     @app.get('/api/reference/uds')
     def reference_uds():return uds_reference()
@@ -58,14 +63,17 @@ def install_research_routes(app,runtime,store,audit):
             store.append_frames(rid,frames);store.stop_recording(rid,{'capture_complete':True,'imported':True})
         except Exception:
             store.stop_recording(rid,{'capture_complete':False,'imported':True});raise
-        audit.append('interchange','trace_imported',{'recording_id':rid,'format':body.format,'frames':len(frames)})
-        return {'recording_id':rid,'frames':len(frames),'format':body.format}
+        audit.append('interchange','trace_imported',{'recording_id':rid,'format':body.format,'frames':len(frames)});return {'recording_id':rid,'frames':len(frames),'format':body.format}
 
     @app.post('/api/discovery/adapters')
     def explicit_discovery(body:DiscoveryBody):
         allow=os.getenv('VISION_ALLOW_DOIP_DISCOVERY','').strip().lower() in {'1','true','yes','on'}
-        if body.include_doip and not allow:
-            raise HTTPException(403,'DoIP broadcast discovery is disabled; set VISION_ALLOW_DOIP_DISCOVERY=1 to explicitly enable it')
+        if body.include_doip and not allow:raise HTTPException(403,'DoIP broadcast discovery is disabled; set VISION_ALLOW_DOIP_DISCOVERY=1 to explicitly enable it')
         result=discover_adapters(include_doip=body.include_doip,include_j2534=body.include_j2534)
         audit.append('discovery','adapter_discovery',{'include_doip':body.include_doip,'include_j2534':body.include_j2534,'transmitted':bool(body.include_doip),'results':len(result)})
         return {'adapters':result,'doip_broadcast_transmitted':bool(body.include_doip),'identity_evidence':False}
+
+    @app.post('/api/vision/connect-doip')
+    async def explicit_doip_connect(body:DoIPConnectBody):
+        try:return await orchestrator.connect_doip_endpoint(body.endpoint,body.logical_address,body.interface,body.discovery_vin,body.eid,body.metadata)
+        except (ValueError,RuntimeError,PermissionError,OSError) as exc:raise HTTPException(409,str(exc)) from exc
