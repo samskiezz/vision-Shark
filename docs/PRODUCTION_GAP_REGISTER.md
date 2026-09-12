@@ -16,6 +16,7 @@
 - Runtime DBC research decoding with differential cantools coverage for little-endian, signed, Motorola/big-endian, multiplexing, extended identifiers and >8-byte CAN-FD-length messages.
 - candump, CSV and JSONL import/export plus deterministic recording replay; candump nanosecond timestamps, low-valued extended IDs, CAN-FD flags and RTR semantics are preserved.
 - Vector ASC and PCAN TRC trace import paths for passive engineering captures.
+- Streaming Parquet import/export for very large engineering captures through the optional `analytics` extra. The path uses bounded SQLite iteration, bounded Arrow batches/row groups, per-frame model validation, Vision-owned schema metadata, SHA-256 export evidence and atomic output replacement.
 - Passive changed-byte sniffer, event-anchored bit discovery, timing/entropy anomaly comparison and ECU clock-skew clustering; inferred signals/ECU membership remain hypotheses.
 - Content-free structural CAN fingerprinting, platform signature comparison and fuzzy matching. Identity remains evidence-gated.
 - Decoder-based drive/charge/idle segmentation is available as an analysis hypothesis when a reviewed decoder is attached.
@@ -33,6 +34,7 @@
 - Component/system-health reporting that distinguishes software readiness from physical vehicle communication proof; SocketCAN readiness requires observed traffic and DoIP readiness requires routed UDS proof.
 - Proof-driven operator UI showing adapter -> vehicle -> communications proof -> ready instead of treating discovery as successful vehicle communication.
 - CLI `doctor` and `probe --prove-diagnostics` for pre-trip adapter/network/DoIP validation.
+- CLI `parquet-export` and `parquet-import` for bounded large-capture interchange without routing multi-gigabyte files through the HTTP request-body path.
 - Supported `vision-shark serve` path is loopback-only and authenticated: startup/admin token, optional viewer role, HttpOnly SameSite=Strict session cookie, CSRF enforcement, mandatory request-bound idempotency keys for state-changing API calls, protected operational APIs/metrics and security audit events. The lower-level `create_app()` factory remains an explicit embedded development/test surface rather than the supported production launch path.
 - LAN exposure remains outside the default CLI and requires a separately reviewed authenticated/TLS deployment.
 - Deterministic application shutdown disconnects active transport and closes recording, audit and provider-intent SQLite stores; lifecycle closure is regression-tested.
@@ -43,7 +45,7 @@
 ## Deliberately detected but not falsely enabled
 
 - Windows J2534 providers can be discovered, but a generic live backend is not automatically enabled because installed-provider metadata alone does not prove listen-only/passive electrical behaviour.
-- MF4/Parquet are recognized interoperability gaps. Core release interchange is candump/CSV/JSONL plus reviewed ASC/TRC import; optional large-measurement format support should use a separately reviewed data dependency and streaming design.
+- MDF4/MF4 remains a recognized interoperability gap. Parquet is now implemented as an optional reviewed analytics integration rather than a mandatory core dependency.
 - ARXML/KCD/SYM/FIBEX/database conversion remains an optional interoperability layer rather than silently making canmatrix a mandatory runtime dependency.
 - OpenClaw provider intents are durable high-level handoffs; no fake lock/climate/phone/eCall/navigation backend is presented as physically executed until an actual provider acknowledges/completes the intent.
 - The embedded `create_app()` factory is intentionally not presented as the secured deployment boundary. Integrators embedding the ASGI app must reproduce the secured wrapper or provide an equivalent authenticated reverse-proxy/security layer.
@@ -52,7 +54,7 @@
 
 These can be implemented without inventing vehicle facts, but they are not required to claim the current passive/read-only core works:
 
-- Optional streaming MF4/MDF4 and Parquet adapters for very large engineering captures.
+- Optional streaming MF4/MDF4 adapter for large ASAM measurement captures.
 - Optional reviewed ARXML/KCD/SYM/FIBEX interchange adapter.
 - Provider-specific J2534 live backend only where passive/listen-only behaviour can be enforced and tested for that provider/device.
 - Real navigation, phone/eCall, health-device and vehicle-convenience providers behind the existing durable OpenClaw intent interface.

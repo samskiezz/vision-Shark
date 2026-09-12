@@ -26,10 +26,11 @@ No upstream code is represented as Vision Shark code unless its licence and prov
 | --- | --- | --- |
 | `python-udsoncan`, `python-doipclient` | Independent bounded ISO 13400/UDS implementation with positive/negative response semantics and read-only allowlist | SecurityAccess, programming, routines, arbitrary writes, ECU reset and coding remain excluded |
 | `mercedes-benz/odxtools` | Reference for a future licensed ODX/PDX naming layer | Not implemented without an appropriate diagnostic data package |
-| `asammdf` | Interface/roadmap reference for large MDF4 measurement workflows | Streaming MDF4/MF4 and Parquet remain optional integration work |
+| `asammdf` | Interface/roadmap reference for large MDF4 measurement workflows | Streaming MDF4/MF4 remains optional integration work |
+| Apache Arrow / Parquet ecosystem | Optional large-capture analytics path with bounded Arrow batches and Parquet row groups | Implemented on the Parquet integration branch; not a mandatory core dependency |
 | MCAP / Foxglove ecosystem | Interchange/design reference for engineering telemetry | Full compressed/indexed MCAP pipeline is not a core dependency |
 | TeslaMate / EV telemetry dashboards | Drive/charge/idle segmentation pattern; Prometheus-style observability landed in later hardening | Tesla cloud polling does not transfer to BYD without a supported API |
-| CANedge data tooling | Decode-to-analytics pipeline pattern | Large-data Parquet/Influx pipeline remains optional |
+| CANedge data tooling | Decode-to-analytics pipeline pattern | Parquet interchange is implemented; hosted Influx/cloud pipeline remains optional |
 
 ## 3. Autonomy, simulation and middleware
 
@@ -76,6 +77,10 @@ Vision Shark’s OpenClaw integration is a policy/orchestration layer, not a dir
 
 These features remain passive/evidence-bound: structural overlap is not vehicle identity, ECU timing clusters are not ECU attribution, and decoded segmentation inherits the validity of the reviewed decoder supplied to it.
 
+### Large-capture Parquet tranche on this branch
+
+The Parquet integration is deliberately outside the HTTP upload path. `vision_shark/large_interchange.py` uses the optional `analytics` dependency, validates a Vision-owned `frames-v1` schema marker, reads and writes bounded Arrow batches/row groups, validates every reconstructed `Frame`, performs atomic file replacement and returns SHA-256 export evidence. `RecordingStore.iter_frames()` and `append_frames_streaming()` keep SQLite-to-Parquet and Parquet-to-SQLite transfers bounded. The `parquet-export` and `parquet-import` CLI commands expose the workflow without weakening the server request-body limit.
+
 ## 7. Historical audit snapshot — `main` @ `640c3b9`
 
 The following findings describe the older 12 September snapshot and are preserved for traceability. They must not be read as the current state of `main`.
@@ -91,36 +96,23 @@ The following findings describe the older 12 September snapshot and are preserve
 
 ## 8. Current-main reconciliation
 
-As of the current supported `main` snapshot reviewed on 13 September 2026:
+As of the supported `main` snapshot used as the base for this tranche on 13 September 2026:
 
-- `main` is at `0180af1d79c752f8701a898860faa3dc97b34e60`.
-- The passive landscape feature tranche from PR #5 is merged.
+- `main` includes the passive landscape feature tranche and the authenticated supported-server hardening.
 - Normal adapter inventory/auto-connect no longer needs hidden DoIP broadcast discovery; active DoIP discovery is an explicit audited opt-in path, and explicit DoIP binding requires routed read-only UDS proof.
 - A discovery VIN is not sufficient vehicle identity evidence by itself.
-- The supported gateway subsequently gained admin/viewer authentication, HttpOnly SameSite=Strict sessions, CSRF enforcement, request-bound idempotency, protected operational APIs/metrics and security audit events.
+- The supported gateway has admin/viewer authentication, HttpOnly SameSite=Strict sessions, CSRF enforcement, request-bound idempotency, protected operational APIs/metrics and security audit events.
 - OpenClaw remains separated from direct driving authority; real providers remain explicit integrations.
 
-### Current measured CI
+### Previously measured CI baseline
 
-For `main` commit `0180af1d79c752f8701a898860faa3dc97b34e60`, GitHub Actions production gate passed:
-
-- dependency resolution: PASS;
-- Ruff correctness/static checks: PASS;
-- pytest: **109 passed**;
-- Python compile: PASS;
-- JavaScript syntax: PASS;
-- `pip-audit`: no known dependency vulnerabilities found in audited third-party packages;
-- CycloneDX SBOM generation/upload: PASS;
-- unresolved implementation-marker gate: PASS;
-- release metadata/version consistency: PASS.
-
-Older counts such as `396 passed, 28 skipped` belong to an earlier/local verification context and are not presented here as the measured current-main CI count.
+For the authenticated supported-server baseline, GitHub Actions production gate passed dependency resolution, Ruff correctness/static checks, pytest, Python compile, JavaScript syntax, dependency vulnerability audit, CycloneDX SBOM generation, unresolved implementation-marker rejection and release metadata/version consistency. The Parquet branch must pass the same production gate with the optional analytics dependency installed before merge; its result is tracked by the pull request rather than pre-declared here.
 
 ## 9. Remaining optional software integrations
 
 These remain genuine future integrations rather than hidden “completed” capabilities:
 
-- streaming MDF4/MF4 and Parquet adapters for large engineering captures;
+- streaming MDF4/MF4 adapter for large ASAM engineering captures;
 - reviewed ARXML/KCD/SYM/FIBEX database-conversion adapter;
 - provider-specific live J2534 backend only where passive/listen-only behavior can be enforced and validated;
 - full KUKSA wire-protocol interoperability;
