@@ -49,7 +49,7 @@ class Runtime:
             source=self.source
             if source is None:return
             try:frame=source.read(timeout=.25);self.receive_drops=int(getattr(source,'dropped',self.receive_drops))
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 - transport boundary must contain backend faults
                 with self._lock:self.last_error=f'receive failed: {type(exc).__name__}: {exc}';self.running=False
                 return
             if frame is not None:self.ingest(frame)
@@ -64,7 +64,8 @@ class Runtime:
                 try:
                     decoded=self.decoder.decode(frame)
                     if decoded:self.signals.update(decoded)
-                except Exception as exc:self.decode_errors+=1;self.last_error=f'decode failed: {type(exc).__name__}: {exc}'
+                except Exception as exc:  # noqa: BLE001 - decoder faults are evidence, not runtime crashes
+                    self.decode_errors+=1;self.last_error=f'decode failed: {type(exc).__name__}: {exc}'
     def status(self):
         with self._lock:
             age=None if self.last_frame_monotonic is None else max(0.,time.monotonic()-self.last_frame_monotonic)
