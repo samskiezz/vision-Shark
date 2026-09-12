@@ -27,6 +27,7 @@ def _doctor_report():
         "socketcan_os_available": hasattr(socket, "AF_CAN"),
         "linux_ip_tool": bool(shutil.which("ip")),
         "parquet_interchange_available": importlib.util.find_spec("pyarrow") is not None,
+        "database_interchange_available": importlib.util.find_spec("canmatrix") is not None,
         "j2534_providers": [
             {
                 "interface": x.interface,
@@ -130,6 +131,39 @@ def _parquet_import(args) -> int:
         store.close()
 
 
+def _database_inspect(args) -> int:
+    from .database_interchange import (
+        DatabaseInterchangeUnavailable,
+        inspect_database,
+    )
+
+    try:
+        result = inspect_database(Path(args.input), args.format)
+    except (DatabaseInterchangeUnavailable, OSError, ValueError) as exc:
+        print(f"Database inspection failed: {exc}", file=sys.stderr)
+        return 2
+    print(json.dumps(result, indent=2))
+    return 0
+
+
+def _database_convert(args) -> int:
+    from .database_interchange import (
+        DatabaseInterchangeUnavailable,
+        convert_to_dbc,
+    )
+
+    if args.to.lower().lstrip(".") != "dbc":
+        print("Database conversion currently normalizes reviewed inputs to DBC", file=sys.stderr)
+        return 2
+    try:
+        result = convert_to_dbc(Path(args.input), args.format, Path(args.output_dir))
+    except (DatabaseInterchangeUnavailable, OSError, ValueError) as exc:
+        print(f"Database conversion failed: {exc}", file=sys.stderr)
+        return 2
+    print(json.dumps(result, indent=2))
+    return 0 if result["all_core_semantics_preserved"] else 3
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(prog="vision-shark")
     parser.add_argument("--version", action="version", version=__version__)
@@ -159,17 +193,29 @@ def main(argv=None):
     parquet_import.add_argument("--batch-size", type=int, default=4096)
     parquet_import.add_argument("--max-frames", type=int, default=10_000_000)
 
+    db_inspect = sub.add_parser("db-inspect")
+    db_inspect.add_argument("--input", required=True)
+    db_inspect.add_argument("--format", required=True)
+
+    db_convert = sub.add_parser("db-convert")
+    db_convert.add_argument("--input", required=True)
+    db_convert.add_argument("--format", required=True)
+    db_convert.add_argument("--to", default="dbc")
+    db_convert.add_argument("--output-dir", required=True)
+
     args = parser.parse_args(argv)
 
     if args.command == "doctor":
         print(json.dumps(_doctor_report(), indent=2))
         return 0
-
     if args.command == "parquet-export":
         return _parquet_export(args)
-
     if args.command == "parquet-import":
         return _parquet_import(args)
+    if args.command == "db-inspect":
+        return _database_inspect(args)
+    if args.command == "db-convert":
+        return _database_convert(args)
 
     if args.command == "probe":
         from .adapter_discovery import discover_adapters, discover_doip
