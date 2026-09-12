@@ -24,20 +24,21 @@ class ConnectBody(BaseModel):source:str;interface:str|None=None
 class DecoderBody(BaseModel):dbc_text:str;bus:str='can0';freshness_ms:int=500
 class AutoConnectBody(BaseModel):simulation:bool=False
 class IdentifyBody(BaseModel):settle_s:float=Field(default=.25,ge=0,le=2)
-class RecordBody(BaseModel):metadata:dict={}
+class RecordBody(BaseModel):metadata:dict=Field(default_factory=dict)
+class ReplayBody(BaseModel):speed:float=Field(default=1.0,gt=0,le=100)
 class DiagnosticDidsBody(BaseModel):dids:list[int]=Field(min_length=1,max_length=16)
 class DiagnosticDtcBody(BaseModel):status_mask:int=Field(default=0xff,ge=0,le=255)
-class ImportCaptureBody(BaseModel):format:str=Field(min_length=1,max_length=16);content:str=Field(max_length=4*1024*1024);metadata:dict={}
+class ImportCaptureBody(BaseModel):format:str=Field(min_length=1,max_length=16);content:str=Field(max_length=4*1024*1024);metadata:dict=Field(default_factory=dict)
 class OpenClawReadBody(BaseModel):name:str=Field(min_length=1,max_length=64)
-class OpenClawActionBody(BaseModel):action:str=Field(min_length=1,max_length=64);arguments:dict={};emergency:bool=False
+class OpenClawActionBody(BaseModel):action:str=Field(min_length=1,max_length=64);arguments:dict=Field(default_factory=dict);emergency:bool=False
 class EmergencyBody(BaseModel):
     driver_responsive:bool|None=None
     medical_alarm:bool=False;crash_detected:bool=False;severe_driver_monitoring_alarm:bool=False;user_requested_help:bool=False;location_available:bool=False
 class ShadowBody(BaseModel):
     vehicle_state:dict
-    detections:list[dict]=[]
+    detections:list[dict]=Field(default_factory=list)
     imu:dict|None=None;gnss:dict|None=None
-    lanes:list[dict]=[];controls:list[dict]=[]
+    lanes:list[dict]=Field(default_factory=list);controls:list[dict]=Field(default_factory=list)
     sensor_age_s:float=Field(default=0,ge=0,le=60)
     model_latency_ms:float=Field(default=0,ge=0,le=10000)
     calibration_valid:bool=True
@@ -133,6 +134,11 @@ def create_app(data_dir:Path|str='data'):
     def recordings():return {'recordings':store.list_recordings()}
     @app.get('/api/recordings/{recording_id}/frames')
     def recording_frames(recording_id:int):return {'frames':[f.model_dump(mode='json') for f in store.load_frames(recording_id)]}
+    @app.post('/api/recordings/{recording_id}/replay')
+    def recording_replay(recording_id:int,body:ReplayBody):
+        frames=store.load_frames(recording_id)
+        if not frames:raise HTTPException(409,'recording has no frames')
+        runtime.connect_replay(frames,body.speed,recording_id);audit.append('replay','started',{'recording_id':recording_id,'speed':body.speed,'frames':len(frames)});return runtime.status()
     @app.get('/api/recordings/{recording_id}/fingerprint')
     def recording_fingerprint(recording_id:int):return fingerprint_frames(store.load_frames(recording_id))
     @app.get('/api/recordings/{recording_id}/isotp')
