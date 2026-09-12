@@ -1,5 +1,6 @@
 from __future__ import annotations
 import asyncio
+from pathlib import Path
 from .session import VehicleSession,WorkflowState
 from .transports import list_can_interfaces
 from .learning import LearningEngine
@@ -8,8 +9,12 @@ from .autonomy import AutonomyRuntime
 
 class VisionOrchestrator:
     """One-button workflow owner. Engineering primitives stay behind this service."""
-    def __init__(self,runtime):
-        self.runtime=runtime;self.session=VehicleSession();self.learning=LearningEngine();self.knowledge=KnowledgeGraph();self.autonomy=AutonomyRuntime();self._lock=asyncio.Lock()
+    def __init__(self,runtime,knowledge_path=None):
+        self.runtime=runtime;self.session=VehicleSession();self.learning=LearningEngine()
+        if knowledge_path is None and getattr(runtime,'storage',None) is not None:
+            base=getattr(runtime.storage,'path',None)
+            if base is not None:knowledge_path=Path(base).parent/'vehicle-knowledge.json'
+        self.knowledge=KnowledgeGraph(knowledge_path);self.autonomy=AutonomyRuntime();self._lock=asyncio.Lock()
     async def connect_auto(self,simulation=False):
         async with self._lock:
             self.session=VehicleSession(state=WorkflowState.DISCOVERING_HARDWARE);self.session.step('discover_hardware')
@@ -33,4 +38,4 @@ class VisionOrchestrator:
             self.session.state=WorkflowState.LEARNING;report=self.learning.analyze(list(self.runtime.recent));self.session.step('passive_learning',frames=report['frame_count'],messages=len(report['message_inventory']),hypotheses=len(report['signal_hypotheses']));self.knowledge.put('learning.latest',report,.5,'passive-learning');self.session.state=WorkflowState.READY;return {'session':self.session.snapshot(),'report':report,'knowledge_digest':self.knowledge.digest()}
     def shadow_autonomy(self,payload):return self.autonomy.run(**payload)
     def status(self):
-        out=self.session.snapshot();out['runtime']=self.runtime.status();out['knowledge_digest']=self.knowledge.digest();return out
+        out=self.session.snapshot();out['runtime']=self.runtime.status();out['knowledge_digest']=self.knowledge.digest();out['knowledge_facts']=len(self.knowledge.snapshot());return out
