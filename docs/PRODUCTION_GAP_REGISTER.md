@@ -21,6 +21,9 @@
 - Reviewed DBC/ARXML/KCD/SYM/FIBEX CAN-database inspection and normalization through the optional `database` extra. Source format is explicit, generic XML is rejected as ambiguous, DTD/entity declarations are rejected before XML parsing, source/output SHA-256 evidence is emitted, multi-matrix inputs become isolated DBC outputs with safe filenames, and generated DBCs are reloaded for core semantic comparison plus separately checked against Vision Shark's bounded runtime decoder subset.
 - Signed external vehicle-profile/evidence bundles with Ed25519 publisher trust, SHA-256 member integrity, bounded ZIP contents, path/symlink defenses, immutable version/digest conflict detection and rollback-safe active-profile selection.
 - Signed fleet catalogs with sequence replay/equivocation rejection, exact bundle-digest matching, transport-agnostic peer-directory synchronization, optional vehicle-assignment application and idempotent repeated synchronization. This synchronizes research/profile metadata only and does not add vehicle actuation or ECU programming.
+- Dossier-driven Shark Field Intelligence: immutable per-recording run context for vehicle/variant/firmware/profile/tyres/load/trailer/terrain/modifications, modification ledger, evidence-graded source/claim graph with append-only validation events, incident and cohort-feedback records, context-gated A/B recording comparison, and nine passive field-test protocols.
+- Machine-readable All Terrain Action EV / EVX research seed carrying the dossier video/source register and first hypothesis set. Seed loading is explicit, audited and idempotent; creator/vendor/community evidence is graded separately from target-vehicle physical validation state.
+- Operator Research Run Card starts a normal passive recording and immediately binds its immutable context; if context persistence fails, the UI stops the newly created recording rather than silently continuing an uncontextualised research run.
 - Passive changed-byte sniffer, event-anchored bit discovery, timing/entropy anomaly comparison and ECU clock-skew clustering; inferred signals/ECU membership remain hypotheses.
 - Content-free structural CAN fingerprinting, platform signature comparison and fuzzy matching. Identity remains evidence-gated.
 - Decoder-based drive/charge/idle segmentation is available as an analysis hypothesis when a reviewed decoder is attached.
@@ -45,7 +48,7 @@
 - Supported `vision-shark serve` path is loopback-only and authenticated: startup/admin token, optional viewer role, HttpOnly SameSite=Strict session cookie, CSRF enforcement, mandatory request-bound idempotency keys for state-changing API calls, protected operational APIs/metrics and security audit events. The lower-level `create_app()` factory remains an explicit embedded development/test surface rather than the supported production launch path.
 - LAN exposure remains outside the default CLI and requires a separately reviewed authenticated/TLS deployment.
 - Deterministic application shutdown disconnects active transport and closes recording, audit and provider-intent SQLite stores; lifecycle closure is regression-tested.
-- CI: pytest, compile, JavaScript syntax, Ruff, dependency resolution, implementation-marker rejection, pip-audit and CycloneDX SBOM.
+- CI: pytest, compile, all packaged operator JavaScript syntax, Ruff, dependency resolution, implementation-marker rejection, pip-audit and CycloneDX SBOM.
 - Runtime repository fetching retired with explicit HTTP 410 migration responses.
 - Requirements files aligned with the hardened `pyproject.toml` dependency set.
 
@@ -56,6 +59,8 @@
 - MDF `CAN_RemoteFrame` and `CAN_ErrorFrame` records remain detectable interoperability cases rather than being falsely represented as fully preserved Vision `Frame` records; the current model does not preserve every remote/error-frame field.
 - CAN-database conversion does not imply perfect preservation of every AUTOSAR/FIBEX vendor extension. The adapter reports core-semantic fidelity and runtime-subset compatibility separately rather than silently presenting normalization as exact full-schema equivalence.
 - Signed fleet synchronization is deliberately metadata/profile-only. It verifies publisher trust and exact bundle content before import, and assignment application is opt-in; it does not remotely control a vehicle or program an ECU.
+- All Terrain/EVX creator, vendor, independent and community material is stored as graded research evidence. A Grade A source is not automatically a physically validated Shark fact, and EVX active-control behaviour is not copied into the supported gateway.
+- Terrain/towing/energy hypotheses remain context and evidence targets until exact Shark signals and firmware behavior are independently validated. The new comparison layer reports context mismatch instead of manufacturing causal attribution.
 - OpenClaw provider intents are durable high-level handoffs; no fake lock/climate/phone/eCall/navigation backend is presented as physically executed until an actual provider acknowledges/completes the intent.
 - The embedded `create_app()` factory is intentionally not presented as the secured deployment boundary. Integrators embedding the ASGI app must reproduce the secured wrapper or provide an equivalent authenticated reverse-proxy/security layer.
 
@@ -67,13 +72,14 @@ These can be implemented without inventing vehicle facts, but they are not requi
 - Real navigation, phone/eCall, health-device and vehicle-convenience providers behind the existing durable OpenClaw intent interface.
 - Full VSS/KUKSA wire-protocol interoperability; the current semantic broker implements the internal provider/broker model but is not a KUKSA server.
 - Hardened authenticated/TLS LAN deployment profile if remote operator access becomes a product requirement.
+- Rich Terrain Observer, Tow & Energy and Camp Power visual dashboards once the required Shark-specific signals have passed the evidence gates below. The underlying session/evidence/incident structures and standard protocols are now present.
 
 ## Evidence gates software cannot truthfully invent
 
 1. Australian BYD Shark 6 physical ENET/DoIP response and exact gateway behaviour.
 2. Exact Shark 6 CAN/CAN-FD topology, bitrates, pinout and which networks are exposed at J1962/OBD.
 3. Exact ECU identities, firmware variants, diagnostic/logical addresses and supported DIDs for the target build.
-4. Validated Shark signal definitions and vehicle profiles backed by independent captures and repeatable fingerprints.
+4. Validated Shark signal definitions and vehicle profiles backed by independent captures and repeatable fingerprints, including terrain mode state, wheel-speed/traction proxies, trailer detection/interlocks, SOC/generator/thermal signals and 12 V/HV/DC-DC parked behavior.
 5. Production camera/radar/lidar hardware drivers, time synchronisation and measured calibration.
 6. Trained perception/prediction models with licensed datasets and independent evaluation.
 7. Any physical steering, braking or propulsion interface plus independent deterministic safety controller/watchdog.
