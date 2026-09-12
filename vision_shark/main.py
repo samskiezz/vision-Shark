@@ -28,22 +28,14 @@ def _doctor_report():
         "linux_ip_tool": bool(shutil.which("ip")),
         "parquet_interchange_available": importlib.util.find_spec("pyarrow") is not None,
         "database_interchange_available": importlib.util.find_spec("canmatrix") is not None,
+        "mf4_interchange_available": importlib.util.find_spec("asammdf") is not None,
         "j2534_providers": [
-            {
-                "interface": x.interface,
-                "endpoint": x.endpoint,
-                "metadata": x.metadata,
-            }
+            {"interface": x.interface, "endpoint": x.endpoint, "metadata": x.metadata}
             for x in j2534
         ],
         "vehicle_validation": "not_performed",
-        "server_security": (
-            "token session + role + CSRF + idempotency on vision-shark serve"
-        ),
-        "next_step": (
-            "connect the OBD adapter and vehicle, then run "
-            "vision-shark probe --prove-diagnostics"
-        ),
+        "server_security": "token session + role + CSRF + idempotency on vision-shark serve",
+        "next_step": "connect the OBD adapter and vehicle, then run vision-shark probe --prove-diagnostics",
     }
 
 
@@ -92,39 +84,18 @@ def _parquet_import(args) -> int:
         )
         count = store.append_frames_streaming(
             recording_id,
-            iter_parquet(
-                source,
-                batch_size=args.batch_size,
-                max_frames=args.max_frames,
-            ),
+            iter_parquet(source, batch_size=args.batch_size, max_frames=args.max_frames),
             batch_size=args.batch_size,
         )
         store.stop_recording(
             recording_id,
-            {
-                "capture_complete": True,
-                "imported": True,
-                "imported_frames": count,
-            },
+            {"capture_complete": True, "imported": True, "imported_frames": count},
         )
-        print(
-            json.dumps(
-                {
-                    "recording_id": recording_id,
-                    "frames": count,
-                    "source": str(source),
-                    "schema": info["format"],
-                },
-                indent=2,
-            )
-        )
+        print(json.dumps({"recording_id": recording_id, "frames": count, "source": str(source), "schema": info["format"]}, indent=2))
         return 0
     except (LargeInterchangeUnavailable, OSError, ValueError) as exc:
         if recording_id is not None:
-            store.stop_recording(
-                recording_id,
-                {"capture_complete": False, "imported": True, "import_error": str(exc)},
-            )
+            store.stop_recording(recording_id, {"capture_complete": False, "imported": True, "import_error": str(exc)})
         print(f"Parquet import failed: {exc}", file=sys.stderr)
         return 2
     finally:
@@ -132,10 +103,7 @@ def _parquet_import(args) -> int:
 
 
 def _database_inspect(args) -> int:
-    from .database_interchange import (
-        DatabaseInterchangeUnavailable,
-        inspect_database,
-    )
+    from .database_interchange import DatabaseInterchangeUnavailable, inspect_database
 
     try:
         result = inspect_database(Path(args.input), args.format)
@@ -147,10 +115,7 @@ def _database_inspect(args) -> int:
 
 
 def _database_convert(args) -> int:
-    from .database_interchange import (
-        DatabaseInterchangeUnavailable,
-        convert_to_dbc,
-    )
+    from .database_interchange import DatabaseInterchangeUnavailable, convert_to_dbc
 
     if args.to.lower().lstrip(".") != "dbc":
         print("Database conversion currently normalizes reviewed inputs to DBC", file=sys.stderr)
@@ -164,6 +129,68 @@ def _database_convert(args) -> int:
     return 0 if result["all_core_semantics_preserved"] else 3
 
 
+def _mf4_inspect(args) -> int:
+    from .mf4_interchange import Mf4InterchangeUnavailable, inspect_mf4
+
+    try:
+        result = inspect_mf4(Path(args.input))
+    except (Mf4InterchangeUnavailable, OSError, ValueError) as exc:
+        print(f"MF4 inspection failed: {exc}", file=sys.stderr)
+        return 2
+    print(json.dumps(result, indent=2))
+    return 0
+
+
+def _mf4_import_can(args) -> int:
+    from .mf4_interchange import Mf4InterchangeUnavailable, inspect_mf4, iter_mf4_can_frames
+    from .storage import RecordingStore
+
+    source = Path(args.input)
+    store = RecordingStore(Path(args.data_dir))
+    recording_id = None
+    try:
+        info = inspect_mf4(source)
+        if info["importable_data_groups"] < 1:
+            raise ValueError("MDF file has no importable explicit CAN_DataFrame bus-event groups")
+        recording_id = store.start_recording(
+            "import",
+            "mf4-can",
+            {
+                "import_format": "mf4-can-bus-event",
+                "source_path": str(source),
+                "source_sha256": info["source_sha256"],
+                "source_bytes": info["source_bytes"],
+                "mdf_version": info["mdf_version"],
+                "frame_count_expected": info["importable_data_cycles"],
+                "remote_groups_detected_not_imported": info["remote_groups_detected_not_imported"],
+                "error_groups_detected_not_imported": info["error_groups_detected_not_imported"],
+            },
+        )
+        count = store.append_frames_streaming(
+            recording_id,
+            iter_mf4_can_frames(source, batch_size=args.batch_size, max_frames=args.max_frames),
+            batch_size=args.batch_size,
+        )
+        store.stop_recording(
+            recording_id,
+            {
+                "capture_complete": True,
+                "imported": True,
+                "imported_frames": count,
+                "raw_can_scope": "CAN_DataFrame only",
+            },
+        )
+        print(json.dumps({"recording_id": recording_id, "frames": count, "source_sha256": info["source_sha256"], "remote_groups_not_imported": info["remote_groups_detected_not_imported"], "error_groups_not_imported": info["error_groups_detected_not_imported"]}, indent=2))
+        return 0
+    except (Mf4InterchangeUnavailable, OSError, ValueError) as exc:
+        if recording_id is not None:
+            store.stop_recording(recording_id, {"capture_complete": False, "imported": True, "import_error": str(exc)})
+        print(f"MF4 raw CAN import failed: {exc}", file=sys.stderr)
+        return 2
+    finally:
+        store.close()
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(prog="vision-shark")
     parser.add_argument("--version", action="version", version=__version__)
@@ -173,7 +200,6 @@ def main(argv=None):
     serve.add_argument("--data-dir", default=os.getenv("VISION_DATA_DIR", "data"))
     serve.add_argument("--host", default="127.0.0.1")
     serve.add_argument("--port", type=int, default=8787)
-
     sub.add_parser("doctor")
 
     probe = sub.add_parser("probe")
@@ -203,6 +229,15 @@ def main(argv=None):
     db_convert.add_argument("--to", default="dbc")
     db_convert.add_argument("--output-dir", required=True)
 
+    mf4_inspect = sub.add_parser("mf4-inspect")
+    mf4_inspect.add_argument("--input", required=True)
+
+    mf4_import = sub.add_parser("mf4-import-can")
+    mf4_import.add_argument("--data-dir", default=os.getenv("VISION_DATA_DIR", "data"))
+    mf4_import.add_argument("--input", required=True)
+    mf4_import.add_argument("--batch-size", type=int, default=4096)
+    mf4_import.add_argument("--max-frames", type=int, default=10_000_000)
+
     args = parser.parse_args(argv)
 
     if args.command == "doctor":
@@ -216,6 +251,10 @@ def main(argv=None):
         return _database_inspect(args)
     if args.command == "db-convert":
         return _database_convert(args)
+    if args.command == "mf4-inspect":
+        return _mf4_inspect(args)
+    if args.command == "mf4-import-can":
+        return _mf4_import_can(args)
 
     if args.command == "probe":
         from .adapter_discovery import discover_adapters, discover_doip
@@ -224,15 +263,8 @@ def main(argv=None):
             parser.error("--timeout must be >0 and <=10 seconds")
         found = discover_adapters(include_doip=False, include_j2534=True)
         found.extend(x.as_dict() for x in discover_doip(args.timeout))
-        found.sort(
-            key=lambda x: (bool(x.get("usable")), x.get("confidence", 0)),
-            reverse=True,
-        )
-        report = {
-            "adapters": found,
-            "usable": sum(1 for x in found if x.get("usable", True)),
-            "diagnostic_proofs": [],
-        }
+        found.sort(key=lambda x: (bool(x.get("usable")), x.get("confidence", 0)), reverse=True)
+        report = {"adapters": found, "usable": sum(1 for x in found if x.get("usable", True)), "diagnostic_proofs": []}
         if args.prove_diagnostics:
             from .doip_transport import DoIPError, DoIPReadOnlyClient
 
@@ -240,27 +272,10 @@ def main(argv=None):
                 if item.get("transport") != "doip" or not item.get("usable", True):
                     continue
                 try:
-                    proof = DoIPReadOnlyClient(
-                        item["endpoint"],
-                        item["logical_address"],
-                    ).prove_readonly_session()
-                    report["diagnostic_proofs"].append(
-                        {
-                            "endpoint": item["endpoint"],
-                            "logical_address": item["logical_address"],
-                            "ok": True,
-                            "proof": proof,
-                        }
-                    )
+                    proof = DoIPReadOnlyClient(item["endpoint"], item["logical_address"]).prove_readonly_session()
+                    report["diagnostic_proofs"].append({"endpoint": item["endpoint"], "logical_address": item["logical_address"], "ok": True, "proof": proof})
                 except (DoIPError, OSError, TimeoutError, ValueError) as exc:
-                    report["diagnostic_proofs"].append(
-                        {
-                            "endpoint": item.get("endpoint"),
-                            "logical_address": item.get("logical_address"),
-                            "ok": False,
-                            "error": f"{type(exc).__name__}: {exc}",
-                        }
-                    )
+                    report["diagnostic_proofs"].append({"endpoint": item.get("endpoint"), "logical_address": item.get("logical_address"), "ok": False, "error": f"{type(exc).__name__}: {exc}"})
         print(json.dumps(report, indent=2))
         if args.prove_diagnostics:
             return 0 if any(x.get("ok") for x in report["diagnostic_proofs"]) else 2
@@ -268,17 +283,13 @@ def main(argv=None):
 
     if args.command == "serve":
         if args.host not in ("127.0.0.1", "localhost", "::1"):
-            parser.error(
-                "This build is loopback-only; use a separately authenticated/TLS "
-                "deployment for LAN access"
-            )
+            parser.error("This build is loopback-only; use a separately authenticated/TLS deployment for LAN access")
         admin_token = os.getenv("VISION_API_TOKEN")
         generated = not bool(admin_token)
         if generated:
             admin_token = secrets.token_urlsafe(32)
         viewer_token = os.getenv("VISION_VIEWER_TOKEN") or None
         from .secure_app import create_secured_app
-
         import uvicorn
 
         print(f"Vision Shark {__version__} | http://{args.host}:{args.port}", flush=True)
@@ -288,12 +299,7 @@ def main(argv=None):
             print("Admin access token loaded from VISION_API_TOKEN.", flush=True)
         if viewer_token:
             print("Optional viewer role enabled from VISION_VIEWER_TOKEN.", flush=True)
-        uvicorn.run(
-            create_secured_app(Path(args.data_dir), admin_token, viewer_token),
-            host=args.host,
-            port=args.port,
-            server_header=False,
-        )
+        uvicorn.run(create_secured_app(Path(args.data_dir), admin_token, viewer_token), host=args.host, port=args.port, server_header=False)
         return 0
     return 1
 
