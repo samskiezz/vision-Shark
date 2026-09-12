@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from fastapi import HTTPException
+from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel,Field
 
 from .adapter_discovery import discover_adapters
@@ -9,6 +10,7 @@ from .agent_policy import evaluate_emergency,evaluate_policy
 from .anomaly import compare_anomaly
 from .ecu_fingerprint import ecu_clock_hypotheses
 from .event_diff import event_bit_diff
+from .metrics import prometheus_metrics
 from .platform_match import match_platforms
 from .segmentation import segment_recording
 from .sniffer import sniffer_view
@@ -33,6 +35,9 @@ class AgentEmergencyBody(BaseModel):
 
 
 def install_research_routes(app,runtime,store,audit,orchestrator):
+    @app.get('/metrics',response_class=PlainTextResponse)
+    def metrics():return PlainTextResponse(prometheus_metrics(runtime,orchestrator,store,audit),media_type='text/plain; version=0.0.4; charset=utf-8')
+
     @app.get('/api/sniffer')
     def sniffer(changed_only:bool=False,changed_within_ms:float=1000.0):
         try:return sniffer_view(list(runtime.recent),changed_only,changed_within_ms)
