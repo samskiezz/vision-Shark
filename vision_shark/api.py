@@ -157,8 +157,7 @@ def create_app(data_dir:Path|str='data'):
         except (ValueError,RuntimeError,PermissionError,OSError) as e:raise HTTPException(409,str(e)) from e
         return runtime.status()
     @app.post('/api/disconnect')
-    def disconnect():
-        runtime.disconnect();orchestrator.session=type(orchestrator.session)();orchestrator.diagnostic_endpoint=None;orchestrator.diagnostic_proof=None;audit.append('vehicle','disconnected');return orchestrator.status()
+    async def disconnect():return await orchestrator.disconnect_auto()
     @app.post('/api/recordings/start')
     def start_recording(body:RecordBody):
         try:recording_id=runtime.start_recording(body.metadata);audit.append('recording','started',{'recording_id':recording_id});return {'recording_id':recording_id}
