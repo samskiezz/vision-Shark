@@ -18,8 +18,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cat .source-transfer/part-*.xz.b64 > /tmp/source.b64
-          base64 -d /tmp/source.b64 > /tmp/source.tar.xz
+          : > /tmp/source.tar.xz
+          for f in .source-transfer/part-*.xz.b64; do base64 -d "$f" >> /tmp/source.tar.xz; done
           mkdir /tmp/source
           tar -xJf /tmp/source.tar.xz -C /tmp/source
           test -f /tmp/source/vision_shark/runtime.py
