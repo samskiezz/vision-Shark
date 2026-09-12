@@ -5,15 +5,17 @@ import io
 import json
 import re
 from collections.abc import Iterable
+from decimal import Decimal,InvalidOperation
 
 from pydantic import ValidationError
 
 from .domain import Frame
 
-_CANDUMP_HASH=re.compile(r'^\s*(?:\((?P<ts>\d+(?:\.\d+)?)\)\s+)?(?P<bus>[A-Za-z0-9_.-]+)\s+(?P<id>[0-9A-Fa-f]{1,8})(?P<sep>##|#)(?P<body>[0-9A-Fa-f]*)\s*$')
+_CANDUMP_HASH=re.compile(r'^\s*(?:\((?P<ts>\d+(?:\.\d+)?)\)\s+)?(?P<bus>[A-Za-z0-9_.-]+)\s+(?P<id>[0-9A-Fa-f]{1,8})(?P<sep>##|#)(?P<body>R[0-9A-Fa-f]?|[0-9A-Fa-f]*)\s*$')
 _CANDUMP_PRETTY=re.compile(r'^\s*(?P<bus>[A-Za-z0-9_.-]+)\s+(?P<id>[0-9A-Fa-f]{1,8})\s+\[(?P<len>\d+)\]\s*(?P<body>(?:[0-9A-Fa-f]{2}\s*)*)$')
 _FIELDS=['ts_ns','bus','arbitration_id','data','extended','can_fd','brs','esi','rtr','error','direction']
 _TRUTHY={'1','true','yes','y'}
+_NSEC=Decimal(1_000_000_000)
 
 
 def _truthy(value)->bool:
@@ -25,18 +27,31 @@ def _candump_extended(id_text:str,arb:int)->bool:
     return len(str(id_text).strip())>3 or int(arb)>0x7ff
 
 
+def _candump_timestamp_ns(value:str)->int:
+    try:scaled=Decimal(value)*_NSEC
+    except InvalidOperation as exc:raise ValueError('invalid candump timestamp') from exc
+    integral=scaled.to_integral_value()
+    if scaled!=integral:raise ValueError('candump timestamp is more precise than one nanosecond')
+    return int(integral)
+
+
 def parse_candump(text:str,max_frames:int=1_000_000)->list[Frame]:
     frames=[];synthetic_ts=0
     for line_no,line in enumerate(str(text).splitlines(),1):
         if not line.strip():continue
         m=_CANDUMP_HASH.match(line)
         if m:
-            id_text=m.group('id');arb=int(id_text,16);is_fd=m.group('sep')=='##';body=m.group('body');brs=False;esi=False
-            if is_fd:
+            id_text=m.group('id');arb=int(id_text,16);is_fd=m.group('sep')=='##';body=m.group('body');rtr=body.upper().startswith('R');brs=False;esi=False
+            if is_fd and rtr:raise ValueError(f'candump line {line_no}: CAN-FD does not support RTR')
+            if rtr:
+                body=''
+            elif is_fd:
                 if not body:raise ValueError(f'candump line {line_no}: missing CAN-FD flags')
                 flags=int(body[0],16);brs=bool(flags&1);esi=bool(flags&2);body=body[1:]
-            ts=int(float(m.group('ts'))*1_000_000_000) if m.group('ts') else synthetic_ts;synthetic_ts=max(synthetic_ts+1,ts+1)
-            frames.append(Frame(ts_ns=ts,bus=m.group('bus'),arbitration_id=arb,data=body,extended=_candump_extended(id_text,arb),can_fd=is_fd,brs=brs,esi=esi))
+            try:ts=_candump_timestamp_ns(m.group('ts')) if m.group('ts') else synthetic_ts
+            except ValueError as exc:raise ValueError(f'candump line {line_no}: {exc}') from exc
+            synthetic_ts=max(synthetic_ts+1,ts+1)
+            frames.append(Frame(ts_ns=ts,bus=m.group('bus'),arbitration_id=arb,data=body,extended=_candump_extended(id_text,arb),can_fd=is_fd,brs=brs,esi=esi,rtr=rtr))
         else:
             m=_CANDUMP_PRETTY.match(line)
             if not m:raise ValueError(f'unsupported candump line {line_no}')
@@ -51,10 +66,13 @@ def export_candump(frames:Iterable[Frame])->str:
     lines=[]
     for f in frames:
         ident=f'{f.arbitration_id:08X}' if f.extended else f'{f.arbitration_id:03X}'
-        if f.can_fd:
+        if f.rtr:
+            payload=f'{ident}#R'
+        elif f.can_fd:
             flags=(1 if f.brs else 0)|(2 if f.esi else 0);payload=f'{ident}##{flags:X}{f.data.upper()}'
         else:payload=f'{ident}#{f.data.upper()}'
-        lines.append(f'({f.ts_ns/1e9:.9f}) {f.bus} {payload}')
+        seconds,nanoseconds=divmod(int(f.ts_ns),1_000_000_000)
+        lines.append(f'({seconds}.{nanoseconds:09d}) {f.bus} {payload}')
     return '\n'.join(lines)+('\n' if lines else '')
 
 
