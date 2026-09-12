@@ -13,4 +13,7 @@ def _key(frame: Frame) -> tuple[str, int, bool, bool]:
 def sniffer_view(
     frames: Iterable[Frame], *, changed_only: bool = False, changed_within_ms: float = 1000.0
 ) -> dict:
-    """Build a passive
+    """Build a passive CAN/CAN-FD sniffer snapshot with byte-change ages.
+
+    The function only analyzes already-observed frames. It never transmits or infers
+    semantic signal meaning. Change ages are relative to
