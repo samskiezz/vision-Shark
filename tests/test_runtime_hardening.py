@@ -12,7 +12,7 @@ from vision_shark.storage import RecordingStore
 
 
 def _doip_candidate():
-    return {'transport':'doip','interface':'Ethernet','confidence':.98,'detail':'test','endpoint':'169.254.10.20','logical_address':0x1000,'vin':'LGXCE6CD1P1234567','eid':'010203040506','usable':True,'metadata':{}}
+    return {'transport':'doip','interface':'Ethernet','confidence':.75,'detail':'test','endpoint':'169.254.10.20','logical_address':0x1000,'vin':'LGXCE6CD1P1234567','eid':'010203040506','usable':True,'metadata':{'transmitted':True}}
 
 
 def test_subnet_and_global_broadcast_targets():
@@ -40,15 +40,25 @@ def test_audit_log_hash_chain(tmp_path):
     audit.close()
 
 
+def test_auto_connect_never_requests_doip_discovery(monkeypatch,tmp_path):
+    import vision_shark.orchestrator as module
+    calls=[]
+    monkeypatch.setattr(module,'discover_adapters',lambda include_doip,include_j2534:calls.append((include_doip,include_j2534)) or [])
+    store=RecordingStore(tmp_path);orch=VisionOrchestrator(Runtime(store))
+    result=asyncio.run(orch.connect_auto(False))
+    assert result['state']=='error' and calls==[(False,True)]
+    assert 'explicit discovery' in result['error']
+    store.close()
+
+
 def test_doip_connect_requires_routed_proof(monkeypatch,tmp_path):
     import vision_shark.orchestrator as module
     store=RecordingStore(tmp_path);runtime=Runtime(store);orch=VisionOrchestrator(runtime)
-    monkeypatch.setattr(module,'discover_adapters',lambda *args,**kwargs:[_doip_candidate()])
     class FailingClient:
         def __init__(self,*args,**kwargs):pass
         def prove_readonly_session(self):raise DoIPError('routing activation denied')
     monkeypatch.setattr(module,'DoIPReadOnlyClient',FailingClient)
-    result=asyncio.run(orch.connect_auto(False))
+    result=asyncio.run(orch.connect_doip_endpoint('169.254.10.20',0x1000,'Ethernet','UNTRUSTEDVIN','010203040506',{}))
     assert result['state']=='error'
     assert result['capabilities']['diagnostics_read'] is False
     assert orch.diagnostic_proof['uds_exchange'] is False
@@ -58,15 +68,16 @@ def test_doip_connect_requires_routed_proof(monkeypatch,tmp_path):
 def test_doip_connect_sets_diagnostics_only_after_proof(monkeypatch,tmp_path):
     import vision_shark.orchestrator as module
     store=RecordingStore(tmp_path);runtime=Runtime(store);orch=VisionOrchestrator(runtime)
-    monkeypatch.setattr(module,'discover_adapters',lambda *args,**kwargs:[_doip_candidate()])
     class ProvenClient:
         def __init__(self,*args,**kwargs):pass
         def prove_readonly_session(self):return {'routing_active':True,'uds_exchange':True,'probe_did':'F190','response':{'ok':True},'vin':'LGXCE6CD1P1234567','latency_ms':1.2}
     monkeypatch.setattr(module,'DoIPReadOnlyClient',ProvenClient)
-    result=asyncio.run(orch.connect_auto(False))
+    result=asyncio.run(orch.connect_doip_endpoint('169.254.10.20',0x1000,'Ethernet','SPOOFABLEVIN','010203040506',{}))
     assert result['state']=='ready'
     assert result['capabilities']['diagnostics_read'] is True
     assert result['vehicle']['status']=='doip_diagnostics_proven'
+    assert result['vehicle']['vin']=='LGXCE6CD1P1234567'
+    assert result['vehicle']['discovery_vin_untrusted']=='SPOOFABLEVIN'
     store.close()
 
 
