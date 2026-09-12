@@ -3,24 +3,51 @@ from pathlib import Path
 from fastapi import FastAPI,HTTPException
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel,Field
 from . import __version__
 from .runtime import Runtime
 from .transports import list_can_interfaces
 from .live_decoder import LiveDecoder
+from .orchestrator import VisionOrchestrator
 
 class ConnectBody(BaseModel):source:str;interface:str|None=None
 class DecoderBody(BaseModel):dbc_text:str;bus:str='can0';freshness_ms:int=500
+class AutoConnectBody(BaseModel):simulation:bool=False
+class IdentifyBody(BaseModel):settle_s:float=Field(default=.25,ge=0,le=2)
+class ShadowBody(BaseModel):
+    vehicle_state:dict
+    detections:list[dict]=[]
+    imu:dict|None=None;gnss:dict|None=None
+    lanes:list[dict]=[];controls:list[dict]=[]
+    sensor_age_s:float=Field(default=0,ge=0,le=60)
+    model_latency_ms:float=Field(default=0,ge=0,le=10000)
+    calibration_valid:bool=True
 
 def create_app(data_dir:Path|str='data'):
     app=FastAPI(title='Vision Shark Gateway',version=__version__,docs_url=None,redoc_url=None)
-    runtime=Runtime(storage=None);app.state.runtime=runtime;web=Path(__file__).parent/'web'
+    runtime=Runtime(storage=None);app.state.runtime=runtime;app.state.orchestrator=VisionOrchestrator(runtime);web=Path(__file__).parent/'web'
     @app.get('/health')
-    def health():return {'status':'ok','version':__version__,'raw_vehicle_tx':False}
+    def health():return {'status':'ok','version':__version__,'raw_vehicle_tx':False,'shadow_autonomy':True}
     @app.get('/api/interfaces')
     def interfaces():return {'interfaces':list_can_interfaces()}
     @app.get('/api/status')
     def status():return runtime.status()
+    @app.get('/api/vision/status')
+    def vision_status():return app.state.orchestrator.status()
+    @app.post('/api/vision/connect')
+    async def vision_connect(body:AutoConnectBody):
+        try:return await app.state.orchestrator.connect_auto(body.simulation)
+        except (ValueError,RuntimeError,PermissionError,OSError) as e:raise HTTPException(409,str(e)) from e
+    @app.post('/api/vision/identify')
+    async def vision_identify(body:IdentifyBody):
+        try:return await app.state.orchestrator.identify_auto(body.settle_s)
+        except ValueError as e:raise HTTPException(409,str(e)) from e
+    @app.post('/api/vision/learn')
+    async def vision_learn():
+        try:return await app.state.orchestrator.learn_auto()
+        except ValueError as e:raise HTTPException(409,str(e)) from e
+    @app.post('/api/vision/autonomy/shadow')
+    def vision_shadow(body:ShadowBody):return app.state.orchestrator.shadow_autonomy(body.model_dump())
     @app.post('/api/connect')
     def connect(body:ConnectBody):
         if body.source=='simulation':runtime.connect_simulator()
@@ -36,7 +63,7 @@ def create_app(data_dir:Path|str='data'):
     @app.get('/api/frames')
     def frames():return {'frames':runtime.recent_frames()}
     @app.post('/api/transmit')
-    def deny_transmit():raise HTTPException(403,'Raw vehicle transmit, driving control and firmware flashing are not exposed by this observation build')
+    def deny_transmit():raise HTTPException(403,'Raw vehicle transmit, live driving control and firmware flashing are not exposed')
     if web.exists():
         @app.get('/')
         def index():return FileResponse(web/'index.html')
