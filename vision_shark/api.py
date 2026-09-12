@@ -48,9 +48,10 @@ def create_app(data_dir:Path|str='data'):
     app=FastAPI(title='Vision Shark Gateway',version=__version__,docs_url=None,redoc_url=None)
     app.add_middleware(RequestBodyDeadlineMiddleware,max_body_bytes=4*1024*1024,deadline_s=15.0)
     runtime=Runtime(storage=store);orchestrator=VisionOrchestrator(runtime,audit=audit)
+    readiness_provider=lambda:gate.evaluate(orchestrator.status())
     openclaw=OpenClawBridge(readers={
         'vision_status':orchestrator.status,
-        'production_readiness':gate.evaluate,
+        'production_readiness':readiness_provider,
         'recordings':store.list_recordings,
         'knowledge':orchestrator.knowledge.snapshot,
     })
@@ -61,7 +62,7 @@ def create_app(data_dir:Path|str='data'):
     @app.get('/api/system/health')
     def system_health():return build_health_report(runtime,orchestrator,audit)
     @app.get('/api/production/readiness')
-    def readiness():return gate.evaluate()
+    def readiness():return readiness_provider()
     @app.get('/api/interfaces')
     def interfaces():return {'interfaces':list_can_interfaces()}
     @app.get('/api/adapters')
