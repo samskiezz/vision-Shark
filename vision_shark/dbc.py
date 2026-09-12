@@ -5,7 +5,7 @@ vehicle transmit capability or constitute evidence that a signal applies to a
 particular vehicle.
 """
 from __future__ import annotations
-import hashlib, math, re, struct
+import hashlib, math, re
 from .domain import Frame, bit_positions
 
 NUMBER=r'[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?'

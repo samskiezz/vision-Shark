@@ -1,6 +1,6 @@
 from __future__ import annotations
 from collections import OrderedDict
-import hashlib,json,threading,time
+import threading,time
 from .dbc import parse_database,decode_message
 
 class LiveDecoder:

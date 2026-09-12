@@ -22,7 +22,7 @@ def require_passive(details,allow_vcan=False):
 def list_can_interfaces(allow_vcan=False):
  if sys.platform!='linux':return []
  try:rows=json.loads(subprocess.run(['ip','-details','-json','link','show'],capture_output=True,text=True,timeout=3,check=True).stdout)
- except Exception:return []
+ except (OSError,subprocess.SubprocessError,json.JSONDecodeError):return []
  out=[]
  for row in rows:
   info=row.get('linkinfo',{});kind=info.get('info_kind')
@@ -59,7 +59,7 @@ class SocketCanSource:
  def read(self,timeout=.25):
   self.sock.settimeout(timeout)
   try:return self.read_batch()[0]
-  except socket.timeout:return None
+  except TimeoutError:return None
  def close(self):
   if self.sock:self.sock.close();self.sock=None
 SocketCANSource=SocketCanSource

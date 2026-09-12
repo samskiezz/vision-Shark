@@ -1,6 +1,6 @@
 from __future__ import annotations
 from pathlib import Path
-import hashlib,json,os,tempfile,time
+import json,os,tempfile,time
 
 class ProvenanceRegistry:
     def __init__(self,path:str|Path):self.path=Path(path);self.data={'datasets':{},'models':{}};self._load()
