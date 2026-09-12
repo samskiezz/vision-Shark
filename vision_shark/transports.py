@@ -2,6 +2,7 @@
 import json,math,re,socket,struct,subprocess,sys,time,random
 from .domain import Frame
 CAN_EFF_FLAG=0x80000000;CAN_RTR_FLAG=0x40000000;CAN_ERR_FLAG=0x20000000;CAN_RAW_FD_FRAMES=5;SOL_CAN_RAW=101
+SO_RXQ_OVFL=getattr(socket,'SO_RXQ_OVFL',40);SO_TIMESTAMPNS=getattr(socket,'SO_TIMESTAMPNS',35)
 
 def interface_details(interface):
  if not re.fullmatch(r'[A-Za-z0-9_.-]{1,15}',interface):raise ValueError('Invalid interface name')
@@ -39,11 +40,22 @@ class SimulationSource:
  def close(self):return None
 SimulatorSource=SimulationSource
 class SocketCanSource:
- def __init__(self,interface,allow_vcan=False):self.interface=interface;self.details=interface_details(interface);self.assurance=require_passive(self.details,allow_vcan);self.dropped=0;self.sock=None;self._open()
- def _open(self):self.sock=socket.socket(socket.AF_CAN,socket.SOCK_RAW,socket.CAN_RAW);self.sock.setsockopt(SOL_CAN_RAW,CAN_RAW_FD_FRAMES,1);self.sock.settimeout(.15);self.sock.bind((self.interface,))
+ def __init__(self,interface,allow_vcan=False):self.interface=interface;self.details=interface_details(interface);self.assurance=require_passive(self.details,allow_vcan);self.dropped=0;self.sock=None;self._last_overflow=0;self._open()
+ def _open(self):
+  self.sock=socket.socket(socket.AF_CAN,socket.SOCK_RAW,socket.CAN_RAW);self.sock.setsockopt(SOL_CAN_RAW,CAN_RAW_FD_FRAMES,1);self.sock.setsockopt(socket.SOL_SOCKET,SO_RXQ_OVFL,1)
+  try:self.sock.setsockopt(socket.SOL_SOCKET,SO_TIMESTAMPNS,1)
+  except OSError:pass
+  self.sock.settimeout(.15);self.sock.bind((self.interface,))
  def open(self):return None
  def read_batch(self):
-  raw=self.sock.recv(72);can_id,length,flags,_,_=struct.unpack('=IBBBB',raw[:8]);fd=len(raw)==72;rtr=bool(can_id&CAN_RTR_FLAG);return [Frame(ts_ns=time.monotonic_ns(),bus=self.interface,arbitration_id=can_id&0x1fffffff,data='' if rtr else raw[8:8+length].hex(),can_fd=fd,extended=bool(can_id&CAN_EFF_FLAG),rtr=rtr,error=bool(can_id&CAN_ERR_FLAG),brs=fd and bool(flags&1),esi=fd and bool(flags&2))]
+  raw,anc,_,_=self.sock.recvmsg(72,128);ts_ns=time.monotonic_ns()
+  for level,ctype,data in anc:
+   if level==socket.SOL_SOCKET and ctype==SO_RXQ_OVFL and len(data)>=4:
+    total=struct.unpack('=I',data[:4])[0];delta=(total-self._last_overflow)&0xffffffff;self.dropped+=delta;self._last_overflow=total
+   elif level==socket.SOL_SOCKET and ctype==SO_TIMESTAMPNS and len(data)>=16:
+    sec,nsec=struct.unpack('=qq',data[:16]);ts_ns=sec*1_000_000_000+nsec
+  can_id,length,flags,_,_=struct.unpack('=IBBBB',raw[:8]);fd=len(raw)==72;rtr=bool(can_id&CAN_RTR_FLAG)
+  return [Frame(ts_ns=ts_ns,bus=self.interface,arbitration_id=can_id&0x1fffffff,data='' if rtr else raw[8:8+length].hex(),can_fd=fd,extended=bool(can_id&CAN_EFF_FLAG),rtr=rtr,error=bool(can_id&CAN_ERR_FLAG),brs=fd and bool(flags&1),esi=fd and bool(flags&2))]
  def read(self,timeout=.25):
   self.sock.settimeout(timeout)
   try:return self.read_batch()[0]
