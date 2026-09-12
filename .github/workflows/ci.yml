@@ -11,7 +11,7 @@ jobs:
         with:
           python-version: '3.12'
       - run: python -m pip install --upgrade pip
-      - run: python -m pip install -e '.[dev]' pip-audit cyclonedx-bom cantools ruff
+      - run: python -m pip install -e '.[dev,analytics]' pip-audit cyclonedx-bom cantools ruff
       - name: Dependency resolution check
         run: python -m pip check
       - name: Python correctness/static checks
