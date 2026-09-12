@@ -28,6 +28,27 @@ def test_passive_isotp_single_and_multiframe():
     assert len(multi)==1 and multi[0].payload_hex=='62f19031323334353637' and multi[0].frame_count==2
 
 
+def test_passive_isotp_extended_addressing_single_and_multiframe():
+    asm=PassiveIsoTpAssembler(addressing='extended',address_extension=0xf1)
+    one=asm.consume(frame(1,0x700,'f1037f2231'))
+    assert len(one)==1 and one[0].payload_hex=='7f2231' and one[0].address_extension==0xf1 and one[0].addressing=='extended'
+    assert asm.consume(frame(2,0x700,'f1100962f1903132'))==[]
+    multi=asm.consume(frame(3,0x700,'f1213334353637'))
+    assert len(multi)==1 and multi[0].payload_hex=='62f190313233343536' and multi[0].frame_count==2
+    # A different extension is a different logical stream and is filtered when configured.
+    assert asm.consume(frame(4,0x700,'f203010203'))==[]
+
+
+def test_passive_isotp_extended_addressing_separates_extensions():
+    asm=PassiveIsoTpAssembler(addressing='extended')
+    assert asm.consume(frame(1,0x700,'f1100962f1903132'))==[]
+    assert asm.consume(frame(2,0x700,'f2100962f1914142'))==[]
+    first=asm.consume(frame(3,0x700,'f1213334353637'))
+    second=asm.consume(frame(4,0x700,'f2214344454647'))
+    assert first[0].address_extension==0xf1 and first[0].payload_hex.startswith('62f190')
+    assert second[0].address_extension==0xf2 and second[0].payload_hex.startswith('62f191')
+
+
 def test_passive_isotp_sequence_mismatch_fails_closed():
     asm=PassiveIsoTpAssembler();assert asm.consume(frame(1,0x7e8,'100a62f190313233'))==[]
     result=asm.consume(frame(2,0x7e8,'2234353637'))
