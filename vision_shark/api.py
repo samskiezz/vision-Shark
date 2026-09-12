@@ -1,7 +1,7 @@
 from __future__ import annotations
 from pathlib import Path
 from fastapi import FastAPI,HTTPException
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse,PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel,Field
 from . import __version__
@@ -15,6 +15,10 @@ from .orchestrator import VisionOrchestrator
 from .middleware import RequestBodyDeadlineMiddleware
 from .audit_log import EventAuditLog
 from .openclaw import OpenClawBridge,EmergencyObservation,EmergencyOrchestrator
+from .health import build_health_report
+from .fingerprint import fingerprint_frames
+from .interchange import load_frames,dump_frames
+from .isotp_passive import PassiveIsoTpAssembler
 
 class ConnectBody(BaseModel):source:str;interface:str|None=None
 class DecoderBody(BaseModel):dbc_text:str;bus:str='can0';freshness_ms:int=500
@@ -22,6 +26,8 @@ class AutoConnectBody(BaseModel):simulation:bool=False
 class IdentifyBody(BaseModel):settle_s:float=Field(default=.25,ge=0,le=2)
 class RecordBody(BaseModel):metadata:dict={}
 class DiagnosticDidsBody(BaseModel):dids:list[int]=Field(min_length=1,max_length=16)
+class DiagnosticDtcBody(BaseModel):status_mask:int=Field(default=0xff,ge=0,le=255)
+class ImportCaptureBody(BaseModel):format:str=Field(min_length=1,max_length=16);content:str=Field(max_length=4*1024*1024);metadata:dict={}
 class OpenClawReadBody(BaseModel):name:str=Field(min_length=1,max_length=64)
 class OpenClawActionBody(BaseModel):action:str=Field(min_length=1,max_length=64);arguments:dict={};emergency:bool=False
 class EmergencyBody(BaseModel):
@@ -51,6 +57,8 @@ def create_app(data_dir:Path|str='data'):
     app.state.runtime=runtime;app.state.store=store;app.state.audit=audit;app.state.orchestrator=orchestrator;app.state.openclaw=openclaw;app.state.emergency=emergency;web=Path(__file__).parent/'web'
     @app.get('/health')
     def health():return {'status':'ok','version':__version__,'mode':gate.PRODUCT_SCOPE,'raw_vehicle_tx':False,'shadow_autonomy':True,'doip_discovery':True,'openclaw_orchestration':True}
+    @app.get('/api/system/health')
+    def system_health():return build_health_report(runtime,orchestrator,audit)
     @app.get('/api/production/readiness')
     def readiness():return gate.evaluate()
     @app.get('/api/interfaces')
@@ -78,6 +86,10 @@ def create_app(data_dir:Path|str='data'):
     @app.post('/api/diagnostics/doip/dids')
     async def doip_dids(body:DiagnosticDidsBody):
         try:return await orchestrator.read_doip_dids(body.dids)
+        except (ValueError,RuntimeError,PermissionError,OSError) as e:raise HTTPException(409,str(e)) from e
+    @app.post('/api/diagnostics/doip/dtcs')
+    async def doip_dtcs(body:DiagnosticDtcBody):
+        try:return await orchestrator.read_doip_dtcs(body.status_mask)
         except (ValueError,RuntimeError,PermissionError,OSError) as e:raise HTTPException(409,str(e)) from e
     @app.get('/api/openclaw/capabilities')
     def openclaw_capabilities():return openclaw.capabilities()
@@ -120,7 +132,31 @@ def create_app(data_dir:Path|str='data'):
     @app.get('/api/recordings')
     def recordings():return {'recordings':store.list_recordings()}
     @app.get('/api/recordings/{recording_id}/frames')
-    def recording_frames(recording_id:int):return {'frames':[f.__dict__ for f in store.load_frames(recording_id)]}
+    def recording_frames(recording_id:int):return {'frames':[f.model_dump(mode='json') for f in store.load_frames(recording_id)]}
+    @app.get('/api/recordings/{recording_id}/fingerprint')
+    def recording_fingerprint(recording_id:int):return fingerprint_frames(store.load_frames(recording_id))
+    @app.get('/api/recordings/{recording_id}/isotp')
+    def recording_isotp(recording_id:int):
+        assembler=PassiveIsoTpAssembler();messages=[];frames=store.load_frames(recording_id)
+        for frame in frames:messages.extend(x.as_dict() for x in assembler.consume(frame))
+        if frames:messages.extend(x.as_dict() for x in assembler.expire(frames[-1].ts_ns+assembler.max_gap_ns+1))
+        return {'messages':messages}
+    @app.get('/api/recordings/{recording_id}/export')
+    def recording_export(recording_id:int,format:str='candump'):
+        try:content=dump_frames(store.load_frames(recording_id),format)
+        except ValueError as e:raise HTTPException(400,str(e)) from e
+        media='text/csv' if format.lower().lstrip('.')=='csv' else 'text/plain';return PlainTextResponse(content,media_type=media)
+    @app.post('/api/interchange/import')
+    def interchange_import(body:ImportCaptureBody):
+        try:frames=load_frames(body.content,body.format)
+        except ValueError as e:raise HTTPException(400,str(e)) from e
+        rid=store.start_recording('import',body.format,{**body.metadata,'import_format':body.format,'frame_count_expected':len(frames)})
+        try:
+            for frame in frames:store.append_frame(rid,frame)
+            store.stop_recording(rid,{'capture_complete':True,'imported':True})
+        except Exception:
+            store.stop_recording(rid,{'capture_complete':False,'imported':True});raise
+        audit.append('interchange','capture_imported',{'recording_id':rid,'format':body.format,'frames':len(frames)});return {'recording_id':rid,'frames':len(frames)}
     @app.post('/api/decoder')
     def decoder(body:DecoderBody):runtime.configure_decoder(LiveDecoder.from_text(body.dbc_text,body.bus,body.freshness_ms));audit.append('decoder','configured',{'bus':body.bus});return {'attached':True,'provenance':runtime.decoder.provenance()}
     @app.delete('/api/decoder')
