@@ -10,6 +10,7 @@ from .research_context import (
     ClaimEvent,
     FieldResearchStore,
     Incident,
+    IncidentEvent,
     RecordingCompareRequest,
     ResearchClaim,
     ResearchFeedback,
@@ -209,6 +210,33 @@ def install_field_routes(app, recording_store, audit):
             raise HTTPException(400, str(exc)) from exc
         return {"incidents": rows}
 
+    @app.get("/api/research/incidents/{incident_id}")
+    def get_incident(incident_id: str):
+        try:
+            with research_store() as research:
+                result = research.get_incident(incident_id)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        if result is None:
+            raise HTTPException(404, "research incident not found")
+        return result
+
+    @app.post("/api/research/incidents/{incident_id}/events")
+    def add_incident_event(incident_id: str, body: IncidentEvent):
+        try:
+            with research_store() as research:
+                result = research.add_incident_event(incident_id, body)
+        except KeyError as exc:
+            raise HTTPException(404, "research incident not found") from exc
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        audit.append(
+            "research",
+            "incident_state_changed",
+            {"incident_id": incident_id, "state": body.state, "event_id": result["event_id"]},
+        )
+        return result
+
     @app.post("/api/research/feedback")
     def put_feedback(body: ResearchFeedback):
         if body.recording_id is not None:
@@ -230,6 +258,15 @@ def install_field_routes(app, recording_store, audit):
             },
         )
         return result
+
+    @app.get("/api/research/feedback")
+    def list_feedback(vehicle_id: str | None = None):
+        try:
+            with research_store() as research:
+                rows = research.list_feedback(vehicle_id)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        return {"feedback": rows}
 
     @app.post("/api/research/recordings/compare")
     def compare_recordings(body: RecordingCompareRequest):
@@ -260,15 +297,22 @@ def install_field_routes(app, recording_store, audit):
             claims = research.list_claims()
             sources = research.list_sources()
             incidents = research.list_incidents()
+            feedback = research.list_feedback()
         states = {}
         for item in claims:
             state = item["effective_validation_state"]
             states[state] = states.get(state, 0) + 1
+        incident_states = {}
+        for item in incidents:
+            state = item["effective_resolution_state"]
+            incident_states[state] = incident_states.get(state, 0) + 1
         return {
             "sources": len(sources),
             "claims": len(claims),
             "claim_states": states,
             "incidents": len(incidents),
+            "incident_states": incident_states,
+            "feedback": len(feedback),
             "test_protocols": len(DEFAULT_TEST_PROTOCOLS),
             "raw_vehicle_tx": False,
         }
