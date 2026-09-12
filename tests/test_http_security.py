@@ -53,11 +53,10 @@ def test_viewer_is_read_only_and_logout_revokes_session(tmp_path):
         assert client.get('/api/status').status_code==200
         denied=client.post('/api/vision/connect',json={'simulation':True},headers={'X-CSRF-Token':csrf,'Idempotency-Key':'viewer-write'})
         assert denied.status_code==403 and denied.json()['detail']=='Admin role required'
-    with TestClient(app) as admin:
-        login=_login(admin,ADMIN);csrf=login.json()['csrf_token']
-        logout=admin.post('/api/auth/logout',headers={'X-CSRF-Token':csrf})
+        login=_login(client,ADMIN);csrf=login.json()['csrf_token']
+        logout=client.post('/api/auth/logout',headers={'X-CSRF-Token':csrf})
         assert logout.status_code==200
-        assert admin.get('/api/status').status_code==401
+        assert client.get('/api/status').status_code==401
 
 
 def test_metrics_and_operational_data_are_protected(tmp_path):
