@@ -6,8 +6,8 @@ from vision_shark.interchange import parse_candump,export_candump,parse_csv,expo
 from vision_shark.isotp_passive import PassiveIsoTpAssembler
 
 
-def frame(ts,arb,data,bus='can0',fd=False,brs=False):
-    return Frame(ts_ns=ts,bus=bus,arbitration_id=arb,data=data,can_fd=fd,brs=brs)
+def frame(ts,arb,data,bus='can0',fd=False,brs=False,extended=False):
+    return Frame(ts_ns=ts,bus=bus,arbitration_id=arb,data=data,can_fd=fd,brs=brs,extended=extended)
 
 
 def test_fingerprint_is_deterministic_and_fuzzy():
@@ -35,11 +35,19 @@ def test_passive_isotp_sequence_mismatch_fails_closed():
 
 
 def test_candump_csv_jsonl_roundtrip():
-    original=[frame(1_000_000_000,0x123,'0102'),frame(2_000_000_000,0x18daf110,'aabbcc',fd=True,brs=True)]
+    original=[frame(1_000_000_000,0x123,'0102'),frame(2_000_000_000,0x18daf110,'aabbcc',fd=True,brs=True,extended=True)]
     candump=export_candump(original);parsed=parse_candump(candump)
-    assert [(x.arbitration_id,x.data,x.can_fd,x.brs) for x in parsed]==[(x.arbitration_id,x.data,x.can_fd,x.brs) for x in original]
+    assert [(x.arbitration_id,x.data,x.can_fd,x.brs,x.extended) for x in parsed]==[(x.arbitration_id,x.data,x.can_fd,x.brs,x.extended) for x in original]
     assert [x.model_dump() for x in parse_csv(export_csv(original))]==[x.model_dump() for x in original]
     assert [x.model_dump() for x in parse_jsonl(export_jsonl(original))]==[x.model_dump() for x in original]
+
+
+def test_candump_preserves_low_valued_extended_identifier():
+    original=frame(1_000_000_000,0x123,'aa',extended=True)
+    text=export_candump([original])
+    assert '00000123#AA' in text
+    parsed=parse_candump(text)[0]
+    assert parsed.arbitration_id==0x123 and parsed.extended is True
 
 
 def test_interchange_and_health_http(tmp_path):
