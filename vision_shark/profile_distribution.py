@@ -685,7 +685,12 @@ def verify_fleet_catalog(path: str | Path, trust: TrustedPublishers) -> dict:
         vehicle_ids.add(vehicle_id)
         if profile_digests.get((pack_id, version)) != digest:
             raise ValueError("fleet assignment references a missing or mismatched profile")
-    return {"payload": payload, "catalog_sha256": _sha256_bytes(encoded), "path": str(source)}
+    return {
+        "fleet_id": fleet_id,
+        "payload": payload,
+        "catalog_sha256": _sha256_bytes(encoded),
+        "path": str(source),
+    }
 
 
 def build_fleet_sync_plan(registry: ProfileFleetRegistry, verified_catalog: dict) -> dict:
