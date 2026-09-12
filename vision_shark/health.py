@@ -15,12 +15,14 @@ class HealthCheck:
 
 
 def build_health_report(runtime,orchestrator,audit=None,max_frame_age_s:float=2.0)->dict:
-    checks=[];status=runtime.status();session=orchestrator.status();source=session.get('source') or status.get('source_kind')
+    checks=[];status=runtime.status();session=orchestrator.status();source=session.get('source') or status.get('source_kind');transport_proven=False
     if source=='doip':
-        proof=session.get('diagnostic_proof') or {};ok=bool(proof.get('routing_active') and proof.get('uds_exchange'))
-        checks.append(HealthCheck('doip_routed_diagnostics','ok' if ok else 'error','routed UDS exchange proven' if ok else 'DoIP routed diagnostic exchange is not proven'))
+        proof=session.get('diagnostic_proof') or {};transport_proven=bool(proof.get('routing_active') and proof.get('uds_exchange'))
+        checks.append(HealthCheck('doip_routed_diagnostics','ok' if transport_proven else 'error','routed UDS exchange proven' if transport_proven else 'DoIP routed diagnostic exchange is not proven'))
     elif source=='socketcan':
-        checks.append(HealthCheck('socketcan_capture','ok' if status.get('connected') else 'error','passive SocketCAN receiver active' if status.get('connected') else 'passive SocketCAN receiver inactive'))
+        active=bool(status.get('connected'));frames=int(status.get('frames_seen') or 0);transport_proven=bool(active and frames>0)
+        detail=f'passive SocketCAN receiver active; frames observed: {frames}' if transport_proven else ('passive SocketCAN receiver active but no vehicle frames observed' if active else 'passive SocketCAN receiver inactive')
+        checks.append(HealthCheck('socketcan_capture','ok' if transport_proven else 'error',detail))
     elif source=='simulator':
         checks.append(HealthCheck('simulation','ok' if status.get('connected') else 'degraded','software simulator connected' if status.get('connected') else 'simulator stopped',required=False))
     elif source=='replay':
@@ -39,5 +41,5 @@ def build_health_report(runtime,orchestrator,audit=None,max_frame_age_s:float=2.
     if any(x['status']=='error' and x['required'] for x in rows):overall='error'
     elif any(x['status'] in ('error','degraded') for x in rows):overall='degraded'
     else:overall='ok'
-    vehicle_ready=session.get('state')=='ready' and source in ('doip','socketcan')
-    return {'status':overall,'checks':rows,'vehicle_ready':vehicle_ready,'diagnostics_read':bool(session.get('capabilities',{}).get('diagnostics_read')),'source':source,'live_actuation':False}
+    vehicle_ready=bool(session.get('state')=='ready' and source in ('doip','socketcan') and transport_proven)
+    return {'status':overall,'checks':rows,'vehicle_ready':vehicle_ready,'vehicle_transport_proven':transport_proven,'diagnostics_read':bool(session.get('capabilities',{}).get('diagnostics_read')),'source':source,'live_actuation':False}
