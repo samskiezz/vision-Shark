@@ -19,7 +19,9 @@ jobs:
         run: |
           set -euo pipefail
           : > /tmp/source.tar.xz
-          for f in .source-transfer/part-*.xz.b64; do base64 -d "$f" >> /tmp/source.tar.xz; done
+          for f in .source-transfer/part-*.xz.b64; do
+            tr -cd 'A-Za-z0-9+/=' < "$f" | base64 -d >> /tmp/source.tar.xz
+          done
           mkdir /tmp/source
           tar -xJf /tmp/source.tar.xz -C /tmp/source
           test -f /tmp/source/vision_shark/runtime.py
