@@ -18,7 +18,7 @@ class OnnxBackend:
   except ImportError as e:raise RuntimeError('onnxruntime optional dependency is required for ONNX inference') from e
   self.session=ort.InferenceSession(str(path),providers=providers or ort.get_available_providers())
  def infer(self,inputs):
-  names=[x.name for x in self.session.get_outputs()];return dict(zip(names,self.session.run(names,inputs)))
+  names=[x.name for x in self.session.get_outputs()];return dict(zip(names,self.session.run(names,inputs),strict=True))
 class ModelRuntime:
  def __init__(self,model_id,backend):self.model_id=model_id;self.backend=backend
  def infer(self,inputs):
