@@ -7,7 +7,7 @@ import socket
 import struct
 import subprocess
 import sys
-from dataclasses import dataclass, asdict, field
+from dataclasses import asdict, dataclass, field
 
 DOIP_PORT = 13400
 DOIP_VERSION = 0x02
@@ -34,7 +34,7 @@ def _linux_interfaces() -> list[dict]:
         rows = json.loads(subprocess.run(
             ['ip', '-json', 'address', 'show'], capture_output=True, text=True,
             timeout=3, check=True).stdout)
-    except Exception:
+    except (OSError, subprocess.SubprocessError, json.JSONDecodeError):
         return []
     out=[]
     for row in rows:
@@ -59,7 +59,7 @@ def _windows_interfaces() -> list[dict]:
         raw=subprocess.run(['powershell','-NoProfile','-NonInteractive','-Command',ps],capture_output=True,text=True,timeout=5,check=True).stdout.strip()
         if not raw:return []
         rows=json.loads(raw);rows=rows if isinstance(rows,list) else [rows]
-    except Exception:
+    except (OSError, subprocess.SubprocessError, json.JSONDecodeError):
         return []
     grouped={}
     for row in rows:
@@ -71,14 +71,14 @@ def _windows_interfaces() -> list[dict]:
 
 def _prefix_from_hex_netmask(value: str) -> int:
     try:
-        mask=int(value,16);return bin(mask & 0xffffffff).count('1')
-    except Exception:
+        mask=int(value,16);return (mask & 0xffffffff).bit_count()
+    except ValueError:
         return 24
 
 
 def _mac_interfaces() -> list[dict]:
     try:raw=subprocess.run(['ifconfig'],capture_output=True,text=True,timeout=4,check=True).stdout
-    except Exception:return []
+    except (OSError, subprocess.SubprocessError):return []
     out=[];name=None;ipv4=[]
     for line in raw.splitlines()+['END:']:
         if line and not line[0].isspace():
@@ -123,21 +123,18 @@ def _parse_doip_identification(packet: bytes):
     if len(payload) < 32:return None
     vin=payload[:17].decode('ascii','replace').strip('\x00 ')
     logical=struct.unpack('!H',payload[17:19])[0]
-    eid=payload[19:25].hex()
-    gid=payload[25:31].hex()
-    further_action=payload[31] if len(payload)>31 else None
+    eid=payload[19:25].hex();gid=payload[25:31].hex();further_action=payload[31] if len(payload)>31 else None
     return {'vin':vin or None,'logical_address':logical,'eid':eid,'gid':gid,'further_action':further_action,'protocol_version':version}
 
 
 def discover_doip(timeout_s: float = 0.75) -> list[AdapterCandidate]:
     """Cross-platform, bounded ISO 13400 vehicle-identification discovery over IPv4."""
+    if timeout_s<=0 or timeout_s>10:raise ValueError('DoIP discovery timeout must be >0 and <=10 seconds')
     header=struct.pack('!BBHI',DOIP_VERSION,DOIP_VERSION ^ 0xff,0x0001,0)
-    found=[];seen=set();interfaces=network_interfaces()
-    probes=[]
+    found=[];seen=set();interfaces=network_interfaces();probes=[]
     for iface in interfaces:
         for item in iface.get('ipv4',[]):
-            addr=item['address'];prefix=int(item.get('prefixlen',24))
-            probes.append((iface['name'],addr,_broadcasts(addr,prefix)))
+            addr=item['address'];prefix=int(item.get('prefixlen',24));probes.append((iface['name'],addr,_broadcasts(addr,prefix)))
     if not probes:probes=[('default',None,['255.255.255.255'])]
     for iface_name,local,targets in probes:
         sock=socket.socket(socket.AF_INET,socket.SOCK_DGRAM,socket.IPPROTO_UDP)
@@ -149,20 +146,14 @@ def discover_doip(timeout_s: float = 0.75) -> list[AdapterCandidate]:
                 except OSError:continue
             while True:
                 try:data,addr=sock.recvfrom(4096)
-                except socket.timeout:break
+                except TimeoutError:break
                 parsed=_parse_doip_identification(data)
                 if not parsed:continue
                 key=(addr[0],parsed['logical_address'])
                 if key in seen:continue
-                seen.add(key)
-                found.append(AdapterCandidate(
-                    'doip',iface_name,.98,'ISO 13400 vehicle-identification response',addr[0],
-                    parsed['logical_address'],parsed['vin'],parsed['eid'],True,
-                    {'gid':parsed['gid'],'further_action':parsed['further_action'],'protocol_version':parsed['protocol_version'],'local_address':local}))
-        except OSError:
-            pass
-        finally:
-            sock.close()
+                seen.add(key);found.append(AdapterCandidate('doip',iface_name,.98,'ISO 13400 vehicle-identification response',addr[0],parsed['logical_address'],parsed['vin'],parsed['eid'],True,{'gid':parsed['gid'],'further_action':parsed['further_action'],'protocol_version':parsed['protocol_version'],'local_address':local}))
+        except OSError:pass
+        finally:sock.close()
     return found
 
 
@@ -171,8 +162,7 @@ def discover_j2534_registry() -> list[AdapterCandidate]:
     if not sys.platform.startswith('win'):return []
     try:import winreg
     except ImportError:return []
-    roots=[r'SOFTWARE\PassThruSupport.04.04',r'SOFTWARE\WOW6432Node\PassThruSupport.04.04',r'SOFTWARE\PassThruSupport.05.00']
-    out=[];seen=set()
+    roots=[r'SOFTWARE\PassThruSupport.04.04',r'SOFTWARE\WOW6432Node\PassThruSupport.04.04',r'SOFTWARE\PassThruSupport.05.00'];out=[];seen=set()
     for path in roots:
         try:key=winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE,path)
         except OSError:continue
@@ -188,8 +178,7 @@ def discover_j2534_registry() -> list[AdapterCandidate]:
                     for value_name in ('Name','Vendor','FunctionLibrary','ConfigApplication','ProtocolsSupported'):
                         try:values[value_name]=winreg.QueryValueEx(sub,value_name)[0]
                         except OSError:pass
-                dll=str(values.get('FunctionLibrary') or '')
-                marker=(name,dll)
+                dll=str(values.get('FunctionLibrary') or '');marker=(name,dll)
                 if marker in seen:continue
                 seen.add(marker);out.append(AdapterCandidate('j2534',str(values.get('Name') or name),.60,'Installed SAE J2534 pass-thru provider',dll or None,usable=False,metadata={'vendor':values.get('Vendor'),'protocols':values.get('ProtocolsSupported'),'reason':'provider detected; live J2534 backend not enabled in passive production path'}))
     return out
@@ -204,5 +193,4 @@ def discover_adapters(include_doip: bool = True, include_j2534: bool = True) -> 
             out.append(AdapterCandidate('socketcan',item['name'],1.0,'driver-reported passive CAN/CAN-FD interface',usable=True,metadata={'ctrlmode':item.get('ctrlmode',[])}).as_dict())
     if include_doip:out.extend(x.as_dict() for x in discover_doip())
     if include_j2534:out.extend(x.as_dict() for x in discover_j2534_registry())
-    out.sort(key=lambda x:(bool(x.get('usable')),x['confidence']),reverse=True)
-    return out
+    out.sort(key=lambda x:(bool(x.get('usable')),x['confidence']),reverse=True);return out
