@@ -11,7 +11,7 @@ BO_ 256 Example: 8 ECU
  SG_ Speed : 0|16@1+ (0.01,0) [0|655.35] "km/h" ECU
  SG_ Temp : 16|8@1- (1,-40) [-40|215] "C" ECU
  SG_ Torque : 24|16@1- (0.1,0) [-3276.8|3276.7] "Nm" ECU
- SG_ Big : 47|16@0+ (1,0) [0|65535] "" ECU
+ SG_ Big : 55|16@0+ (1,0) [0|65535] "" ECU
 '''
 
 MUX_DBC='''VERSION ""
@@ -45,8 +45,9 @@ BO_ 768 FDFrame: 12 ECU
 def _compare(dbc_text,wire_id,payload,frame_id=None,extended=False,can_fd=False):
     ours=parse_database(dbc_text)
     reference=cantools.database.load_string(dbc_text,database_format='dbc',strict=False)
-    expected=reference.decode_message(frame_id if frame_id is not None else wire_id,payload,decode_choices=False)
-    frame=Frame(ts_ns=1,bus='can0',arbitration_id=frame_id if frame_id is not None else wire_id,data=payload.hex(),extended=extended,can_fd=can_fd)
+    lookup_id=frame_id if frame_id is not None else wire_id
+    expected=reference.decode_message(lookup_id,payload,decode_choices=False,force_extended_id=extended)
+    frame=Frame(ts_ns=1,bus='can0',arbitration_id=lookup_id,data=payload.hex(),extended=extended,can_fd=can_fd)
     actual={x['signal']:x['value'] for x in decode_message(ours,frame)}
     assert set(actual)==set(expected)
     for name,value in expected.items():
@@ -55,7 +56,7 @@ def _compare(dbc_text,wire_id,payload,frame_id=None,extended=False,can_fd=False)
 
 
 def test_decoder_matches_cantools_for_signed_little_and_motorola():
-    # Speed=12.34; Temp=60; Torque=-12.3; Big=0x1234.
+    # Speed=12.34; Temp=60; Torque=-12.3; Motorola Big=0x1234.
     payload=bytes.fromhex('d2046485ff001234')
     _,actual=_compare(SCALAR_DBC,256,payload)
     assert actual['Speed']==pytest.approx(12.34)
