@@ -23,6 +23,7 @@ from vision_shark.profile_distribution import (
 
 
 def _trust(tmp_path: Path, publisher: str = "Vision Lab", key_id: str = "lab-key"):
+    tmp_path.mkdir(parents=True, exist_ok=True)
     private = Ed25519PrivateKey.generate()
     public = private.public_key().public_bytes(
         serialization.Encoding.Raw,
