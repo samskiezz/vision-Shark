@@ -16,11 +16,11 @@ class LearningEngine:
                 vals=[s[i] for s in samples if i<len(s)];unique=len(set(vals))
                 if unique>1:varying.append({'byte':i,'unique':unique,'entropy_bits':round(self._entropy(vals),4)})
                 if len(vals)>=10:
-                    inc=sum(1 for a,b in zip(vals,vals[1:]) if ((b-a)&0xff)==1)/max(1,len(vals)-1)
+                    inc=sum(1 for a,b in zip(vals,vals[1:],strict=False) if ((b-a)&0xff)==1)/max(1,len(vals)-1)
                     if inc>=.85:counter.append({'byte':i,'increment_ratio':round(inc,4),'modulus':256})
                     matches=sum(1 for s in samples if len(s)>1 and i<len(s) and s[i]==(sum(s[:i])+sum(s[i+1:]))&0xff)
                     if matches/max(1,len(samples))>=.9:checksum.append({'byte':i,'algorithm':'sum8-other-bytes','match_ratio':round(matches/max(1,len(samples)),4)})
-            ts=times[(bus,aid)];intervals=[(b-a)/1e6 for a,b in zip(ts,ts[1:]) if b>=a];period={'median_ms':self._median(intervals),'jitter_ms':self._std(intervals)} if intervals else None
+            ts=times[(bus,aid)];intervals=[(b-a)/1e6 for a,b in zip(ts,ts[1:],strict=False) if b>=a];period={'median_ms':self._median(intervals),'jitter_ms':self._std(intervals)} if intervals else None
             candidates.append({'bus':bus,'arbitration_id':aid,'samples':len(samples),'varying_bytes':varying,'counter_hypotheses':counter,'checksum_hypotheses':checksum,'periodicity':period})
         return {'frame_count':len(frames),'message_inventory':[{'bus':k[0],'arbitration_id':k[1],'can_fd':k[2],'extended':k[3],'count':n} for k,n in ids.most_common()],'lengths':{f'{b}:{aid:X}':dict(c) for (b,aid),c in lengths.items()},'signal_hypotheses':candidates,'status':'hypotheses_only'}
     def _entropy(self,values):
