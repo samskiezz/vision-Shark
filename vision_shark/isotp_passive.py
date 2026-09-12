@@ -38,6 +38,10 @@ class PassiveIsoTpAssembler:
         return ae,raw[1:]
     def _message(self,ts_ns,bus,arb_id,payload_hex,frames,complete=True,reason='complete',ae=None):
         return IsoTpMessage(ts_ns,bus,arb_id,payload_hex,frames,complete,reason,self.addressing,ae)
+    def _supersede(self,key,ts_ns,reason):
+        state=self._streams.pop(key,None)
+        if state is None:return []
+        return [self._message(ts_ns,state['bus'],state['id'],bytes(state['payload']).hex(),state['frames'],False,reason,state['ae'])]
     def consume(self,frame:Frame)->list[IsoTpMessage]:
         if frame.error or frame.rtr:return []
         raw=bytes.fromhex(frame.data)
@@ -47,6 +51,7 @@ class PassiveIsoTpAssembler:
         if not pdu:return out
         kind=pdu[0]>>4;key=self._key(frame,ae)
         if kind==0:
+            out.extend(self._supersede(key,frame.ts_ns,'superseded_by_single_frame'))
             length=pdu[0]&0x0f;start=1
             if length==0:
                 if len(pdu)<2:return out
@@ -54,6 +59,7 @@ class PassiveIsoTpAssembler:
             if length>len(pdu)-start:return out+[self._message(frame.ts_ns,frame.bus,frame.arbitration_id,pdu[start:].hex(),1,False,'short_single_frame',ae)]
             return out+[self._message(frame.ts_ns,frame.bus,frame.arbitration_id,pdu[start:start+length].hex(),1,ae=ae)]
         if kind==1:
+            out.extend(self._supersede(key,frame.ts_ns,'superseded_by_first_frame'))
             if len(pdu)<2:return out
             total=((pdu[0]&0x0f)<<8)|pdu[1];start=2
             if total==0:
