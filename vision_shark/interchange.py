@@ -4,12 +4,21 @@ import csv
 import io
 import json
 import re
-from typing import Iterable
+from collections.abc import Iterable
+
+from pydantic import ValidationError
+
 from .domain import Frame
 
 _CANDUMP_HASH=re.compile(r'^\s*(?:\((?P<ts>\d+(?:\.\d+)?)\)\s+)?(?P<bus>[A-Za-z0-9_.-]+)\s+(?P<id>[0-9A-Fa-f]{1,8})(?P<sep>##|#)(?P<body>[0-9A-Fa-f]*)\s*$')
 _CANDUMP_PRETTY=re.compile(r'^\s*(?P<bus>[A-Za-z0-9_.-]+)\s+(?P<id>[0-9A-Fa-f]{1,8})\s+\[(?P<len>\d+)\]\s*(?P<body>(?:[0-9A-Fa-f]{2}\s*)*)$')
 _FIELDS=['ts_ns','bus','arbitration_id','data','extended','can_fd','brs','esi','rtr','error','direction']
+_TRUTHY={'1','true','yes','y'}
+
+
+def _truthy(value)->bool:
+    return str(value or '').strip().lower() in _TRUTHY
+
 
 def parse_candump(text:str,max_frames:int=1_000_000)->list[Frame]:
     frames=[];synthetic_ts=0
@@ -32,6 +41,7 @@ def parse_candump(text:str,max_frames:int=1_000_000)->list[Frame]:
         if len(frames)>max_frames:raise ValueError('capture exceeds frame limit')
     return frames
 
+
 def export_candump(frames:Iterable[Frame])->str:
     lines=[]
     for f in frames:
@@ -42,28 +52,34 @@ def export_candump(frames:Iterable[Frame])->str:
         lines.append(f'({f.ts_ns/1e9:.9f}) {f.bus} {payload}')
     return '\n'.join(lines)+('\n' if lines else '')
 
+
 def parse_jsonl(text:str,max_frames:int=1_000_000)->list[Frame]:
     frames=[]
     for line_no,line in enumerate(str(text).splitlines(),1):
         if not line.strip():continue
         try:frames.append(Frame.model_validate(json.loads(line)))
-        except Exception as exc:raise ValueError(f'invalid JSONL frame at line {line_no}: {exc}') from exc
+        except (json.JSONDecodeError,ValidationError,TypeError,ValueError) as exc:raise ValueError(f'invalid JSONL frame at line {line_no}: {exc}') from exc
         if len(frames)>max_frames:raise ValueError('capture exceeds frame limit')
     return frames
 
+
 def export_jsonl(frames:Iterable[Frame])->str:
     return ''.join(json.dumps(f.model_dump(mode='json'),sort_keys=True,separators=(',',':'))+'\n' for f in frames)
+
 
 def parse_csv(text:str,max_frames:int=1_000_000)->list[Frame]:
     reader=csv.DictReader(io.StringIO(str(text)))
     if not reader.fieldnames or not {'ts_ns','bus','arbitration_id','data'}<=set(reader.fieldnames):raise ValueError('CSV requires ts_ns,bus,arbitration_id,data columns')
     frames=[]
-    for row in reader:
-        def b(name):return str(row.get(name,'')).strip().lower() in ('1','true','yes','y')
-        arb_text=str(row['arbitration_id']).strip();arb=int(arb_text,16) if arb_text.lower().startswith('0x') else int(arb_text)
-        frames.append(Frame(ts_ns=int(row['ts_ns']),bus=row['bus'],arbitration_id=arb,data=row.get('data',''),extended=b('extended'),can_fd=b('can_fd'),brs=b('brs'),esi=b('esi'),rtr=b('rtr'),error=b('error'),direction=row.get('direction') or 'rx'))
+    for line_no,row in enumerate(reader,2):
+        try:
+            arb_text=str(row['arbitration_id']).strip();arb=int(arb_text,16) if arb_text.lower().startswith('0x') else int(arb_text)
+            frames.append(Frame(ts_ns=int(row['ts_ns']),bus=row['bus'],arbitration_id=arb,data=row.get('data',''),extended=_truthy(row.get('extended')),can_fd=_truthy(row.get('can_fd')),brs=_truthy(row.get('brs')),esi=_truthy(row.get('esi')),rtr=_truthy(row.get('rtr')),error=_truthy(row.get('error')),direction=row.get('direction') or 'rx'))
+        except (KeyError,TypeError,ValueError,ValidationError) as exc:
+            raise ValueError(f'invalid CSV frame at line {line_no}: {exc}') from exc
         if len(frames)>max_frames:raise ValueError('capture exceeds frame limit')
     return frames
+
 
 def export_csv(frames:Iterable[Frame])->str:
     out=io.StringIO();writer=csv.DictWriter(out,fieldnames=_FIELDS,lineterminator='\n');writer.writeheader()
@@ -71,12 +87,14 @@ def export_csv(frames:Iterable[Frame])->str:
         row=f.model_dump(mode='json');writer.writerow({k:row.get(k) for k in _FIELDS})
     return out.getvalue()
 
+
 def load_frames(content:str,fmt:str)->list[Frame]:
     fmt=str(fmt).lower().lstrip('.')
     if fmt in ('candump','log'):return parse_candump(content)
     if fmt in ('jsonl','ndjson'):return parse_jsonl(content)
     if fmt=='csv':return parse_csv(content)
     raise ValueError('supported formats: candump/log, jsonl/ndjson, csv')
+
 
 def dump_frames(frames:Iterable[Frame],fmt:str)->str:
     fmt=str(fmt).lower().lstrip('.')
