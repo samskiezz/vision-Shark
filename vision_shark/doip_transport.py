@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import socket
 import struct
+import time
 
 DOIP_PORT=13400
 VERSION=0x02
@@ -29,16 +30,24 @@ def _recv(sock:socket.socket,limit:int=1024*1024):
         body+=part
     return ptype,body
 
-class DoIPReadOnlyClient:
-    """Minimal bounded DoIP client for identification/status and allowlisted UDS reads.
 
-    No diagnostic-session change, security access, routine control, download,
-    transfer, ECU reset, IO control, DTC clear, coding or programming services
-    are accepted by this class.
+def parse_uds_response(payload:bytes,requested_service:int|None=None)->dict:
+    if not payload:return {'ok':False,'kind':'empty','raw_hex':''}
+    sid=payload[0]
+    if sid==0x7f:
+        return {'ok':False,'kind':'negative_response','request_service':payload[1] if len(payload)>1 else None,'nrc':payload[2] if len(payload)>2 else None,'raw_hex':payload.hex()}
+    expected=None if requested_service is None else ((int(requested_service)+0x40)&0xff)
+    return {'ok':expected is None or sid==expected,'kind':'positive_response' if expected is None or sid==expected else 'unexpected_response','service':sid,'raw_hex':payload.hex()}
+
+class DoIPReadOnlyClient:
+    """Bounded DoIP client exposing only allowlisted read-only UDS services.
+
+    It cannot change diagnostic session, unlock security, clear DTCs, perform IO
+    control, run routines, download, transfer, reset, code or program ECUs.
     """
     ALLOWED_UDS_SERVICES={0x19,0x22}
     def __init__(self,host:str,target_address:int,source_address:int=0x0e80,timeout:float=2.0):
-        self.host=str(host);self.target_address=int(target_address);self.source_address=int(source_address);self.timeout=float(timeout);self.sock=None
+        self.host=str(host);self.target_address=int(target_address);self.source_address=int(source_address);self.timeout=float(timeout);self.sock=None;self.routing_active=False
     def connect(self):
         self.close();s=socket.create_connection((self.host,DOIP_PORT),timeout=self.timeout);s.settimeout(self.timeout);self.sock=s
         s.sendall(_packet(0x0005,struct.pack('!HB',self.source_address,0x00)))
@@ -46,11 +55,15 @@ class DoIPReadOnlyClient:
         if ptype!=0x0006 or len(body)<5:raise DoIPError('routing activation response missing')
         response_code=body[4]
         if response_code not in (0x10,0x11):raise DoIPError(f'routing activation denied: 0x{response_code:02x}')
+        self.routing_active=True
         return self
     def close(self):
         if self.sock:
             try:self.sock.close()
             finally:self.sock=None
+        self.routing_active=False
+    def __enter__(self):return self.connect()
+    def __exit__(self,*_):self.close()
     def read_uds(self,payload:bytes) -> bytes:
         if not payload or payload[0] not in self.ALLOWED_UDS_SERVICES:raise PermissionError('only allowlisted read-only UDS services are exposed')
         if payload[0]==0x19 and (len(payload)<2 or payload[1] not in (0x01,0x02,0x0a)):raise PermissionError('DTC request subfunction is not allowlisted')
@@ -71,3 +84,20 @@ class DoIPReadOnlyClient:
         return self.read_uds(payload)
     def read_dtcs(self,status_mask:int=0xff):
         return self.read_uds(bytes((0x19,0x02,int(status_mask)&0xff)))
+    def prove_readonly_session(self)->dict:
+        """Prove routing plus one standard identification read without guessing OEM DIDs.
+
+        DID F190 (VIN) is used only as a standards-based probe. A negative UDS
+        response still proves that DoIP routing and diagnostic message exchange work.
+        """
+        started=time.monotonic_ns()
+        self.connect()
+        try:
+            response=self.read_dids([0xF190]);parsed=parse_uds_response(response,0x22)
+            vin=None
+            if parsed['ok'] and len(response)>=3 and response[1:3]==b'\xf1\x90':
+                value=response[3:].rstrip(b'\x00\xff')
+                try:vin=value.decode('ascii').strip() or None
+                except UnicodeDecodeError:vin=None
+            return {'routing_active':True,'uds_exchange':True,'probe_did':'F190','response':parsed,'vin':vin,'latency_ms':round((time.monotonic_ns()-started)/1e6,3)}
+        finally:self.close()
