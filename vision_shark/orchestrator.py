@@ -44,7 +44,7 @@ class VisionOrchestrator:
                     if proof.get('vin') and identity.get('vin') and proof['vin']!=identity['vin']:
                         self.session.vehicle=identity;self.session.state=WorkflowState.ERROR;self.session.error='VIN mismatch between DoIP discovery and routed diagnostic response';self.session.step('doip_identity_mismatch','failed');self._audit('doip_identity_mismatch',{'discovery_vin':identity['vin'],'diagnostic_vin':proof['vin']});return self.session.snapshot()
                     if proof.get('vin') and not identity.get('vin'):identity['vin']=proof['vin']
-                    self.session.vehicle=identity;self.session.confidence=.99;self.knowledge.put('vehicle.doip_identity',identity,.99,'doip-readonly-proof',maturity='observed');self.knowledge.put('vehicle.doip_diagnostic_proof',proof,.99,'doip-readonly-proof',maturity='observed');self.session.step('doip_diagnostics_proven',latency_ms=proof.get('latency_ms'));self._audit('doip_diagnostics_proven',proof)
+                    self.session.vehicle=identity;self.session.confidence=.99;self.session.capabilities['diagnostics_read']=True;self.knowledge.put('vehicle.doip_identity',identity,.99,'doip-readonly-proof',maturity='observed');self.knowledge.put('vehicle.doip_diagnostic_proof',proof,.99,'doip-readonly-proof',maturity='observed');self.session.step('doip_diagnostics_proven',latency_ms=proof.get('latency_ms'));self._audit('doip_diagnostics_proven',proof)
             self.session.state=WorkflowState.READY;return self.session.snapshot()
     async def identify_auto(self,settle_s=.25):
         async with self._lock:
