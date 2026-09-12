@@ -20,24 +20,29 @@ def _truthy(value)->bool:
     return str(value or '').strip().lower() in _TRUTHY
 
 
+def _candump_extended(id_text:str,arb:int)->bool:
+    """Candump uses identifier width to preserve low-valued 29-bit IDs."""
+    return len(str(id_text).strip())>3 or int(arb)>0x7ff
+
+
 def parse_candump(text:str,max_frames:int=1_000_000)->list[Frame]:
     frames=[];synthetic_ts=0
     for line_no,line in enumerate(str(text).splitlines(),1):
         if not line.strip():continue
         m=_CANDUMP_HASH.match(line)
         if m:
-            arb=int(m.group('id'),16);is_fd=m.group('sep')=='##';body=m.group('body');brs=False;esi=False
+            id_text=m.group('id');arb=int(id_text,16);is_fd=m.group('sep')=='##';body=m.group('body');brs=False;esi=False
             if is_fd:
                 if not body:raise ValueError(f'candump line {line_no}: missing CAN-FD flags')
                 flags=int(body[0],16);brs=bool(flags&1);esi=bool(flags&2);body=body[1:]
             ts=int(float(m.group('ts'))*1_000_000_000) if m.group('ts') else synthetic_ts;synthetic_ts=max(synthetic_ts+1,ts+1)
-            frames.append(Frame(ts_ns=ts,bus=m.group('bus'),arbitration_id=arb,data=body,extended=arb>0x7ff,can_fd=is_fd,brs=brs,esi=esi))
+            frames.append(Frame(ts_ns=ts,bus=m.group('bus'),arbitration_id=arb,data=body,extended=_candump_extended(id_text,arb),can_fd=is_fd,brs=brs,esi=esi))
         else:
             m=_CANDUMP_PRETTY.match(line)
             if not m:raise ValueError(f'unsupported candump line {line_no}')
             body=''.join(m.group('body').split());declared=int(m.group('len'))
             if len(body)//2!=declared:raise ValueError(f'candump line {line_no}: length mismatch')
-            arb=int(m.group('id'),16);frames.append(Frame(ts_ns=synthetic_ts,bus=m.group('bus'),arbitration_id=arb,data=body,extended=arb>0x7ff));synthetic_ts+=1
+            id_text=m.group('id');arb=int(id_text,16);frames.append(Frame(ts_ns=synthetic_ts,bus=m.group('bus'),arbitration_id=arb,data=body,extended=_candump_extended(id_text,arb)));synthetic_ts+=1
         if len(frames)>max_frames:raise ValueError('capture exceeds frame limit')
     return frames
 
