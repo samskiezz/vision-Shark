@@ -19,6 +19,8 @@
 - Streaming Parquet import/export for very large engineering captures through the optional `analytics` extra. The path uses bounded SQLite iteration, bounded Arrow batches/row groups, per-frame model validation, Vision-owned schema metadata, SHA-256 export evidence and atomic output replacement.
 - MDF/MF4 inspection and bounded raw-CAN import through the optional `measurement` extra. Vision Shark only reconstructs frames from MDF4 channel groups explicitly marked as bus events, sourced as CAN and exposing `CAN_DataFrame` with BusChannel/ID/IDE/DataLength/DataBytes/EDL semantics. Record reads use bounded `record_offset`/`record_count` chunks. Generic measurement channels are never guessed into CAN frames. `CAN_RemoteFrame` and `CAN_ErrorFrame` groups are detected and reported but not silently collapsed into the current `Frame` model where their source semantics cannot be preserved completely.
 - Reviewed DBC/ARXML/KCD/SYM/FIBEX CAN-database inspection and normalization through the optional `database` extra. Source format is explicit, generic XML is rejected as ambiguous, DTD/entity declarations are rejected before XML parsing, source/output SHA-256 evidence is emitted, multi-matrix inputs become isolated DBC outputs with safe filenames, and generated DBCs are reloaded for core semantic comparison plus separately checked against Vision Shark's bounded runtime decoder subset.
+- Signed external vehicle-profile/evidence bundles with Ed25519 publisher trust, SHA-256 member integrity, bounded ZIP contents, path/symlink defenses, immutable version/digest conflict detection and rollback-safe active-profile selection.
+- Signed fleet catalogs with sequence replay/equivocation rejection, exact bundle-digest matching, transport-agnostic peer-directory synchronization, optional vehicle-assignment application and idempotent repeated synchronization. This synchronizes research/profile metadata only and does not add vehicle actuation or ECU programming.
 - Passive changed-byte sniffer, event-anchored bit discovery, timing/entropy anomaly comparison and ECU clock-skew clustering; inferred signals/ECU membership remain hypotheses.
 - Content-free structural CAN fingerprinting, platform signature comparison and fuzzy matching. Identity remains evidence-gated.
 - Decoder-based drive/charge/idle segmentation is available as an analysis hypothesis when a reviewed decoder is attached.
@@ -39,6 +41,7 @@
 - CLI `parquet-export` and `parquet-import` for bounded large-capture interchange without routing multi-gigabyte files through the HTTP request-body path.
 - CLI `mf4-inspect` and `mf4-import-can` for local ASAM MDF4 engineering captures without relaxing the HTTP upload boundary or inventing CAN traffic from measurement signals.
 - CLI `db-inspect` and `db-convert` for reviewed local CAN-database artifacts without enabling a vehicle transmit path.
+- CLI `profile-bundle-create`, `profile-bundle-verify`, `profile-import`, `fleet-assign`, `fleet-status`, `fleet-catalog-export`, `fleet-catalog-verify` and `fleet-sync` for trusted profile/evidence distribution and multi-vehicle registry synchronization.
 - Supported `vision-shark serve` path is loopback-only and authenticated: startup/admin token, optional viewer role, HttpOnly SameSite=Strict session cookie, CSRF enforcement, mandatory request-bound idempotency keys for state-changing API calls, protected operational APIs/metrics and security audit events. The lower-level `create_app()` factory remains an explicit embedded development/test surface rather than the supported production launch path.
 - LAN exposure remains outside the default CLI and requires a separately reviewed authenticated/TLS deployment.
 - Deterministic application shutdown disconnects active transport and closes recording, audit and provider-intent SQLite stores; lifecycle closure is regression-tested.
@@ -52,6 +55,7 @@
 - MDF4/MF4 support is deliberately raw-CAN evidence-bound rather than a generic signal-to-CAN converter. Normal MDF measurement channels can be inspected by the upstream measurement library but are not presented as original CAN frames unless explicit CAN bus-event records exist.
 - MDF `CAN_RemoteFrame` and `CAN_ErrorFrame` records remain detectable interoperability cases rather than being falsely represented as fully preserved Vision `Frame` records; the current model does not preserve every remote/error-frame field.
 - CAN-database conversion does not imply perfect preservation of every AUTOSAR/FIBEX vendor extension. The adapter reports core-semantic fidelity and runtime-subset compatibility separately rather than silently presenting normalization as exact full-schema equivalence.
+- Signed fleet synchronization is deliberately metadata/profile-only. It verifies publisher trust and exact bundle content before import, and assignment application is opt-in; it does not remotely control a vehicle or program an ECU.
 - OpenClaw provider intents are durable high-level handoffs; no fake lock/climate/phone/eCall/navigation backend is presented as physically executed until an actual provider acknowledges/completes the intent.
 - The embedded `create_app()` factory is intentionally not presented as the secured deployment boundary. Integrators embedding the ASGI app must reproduce the secured wrapper or provide an equivalent authenticated reverse-proxy/security layer.
 
@@ -61,7 +65,6 @@ These can be implemented without inventing vehicle facts, but they are not requi
 
 - Provider-specific J2534 live backend only where passive/listen-only behaviour can be enforced and tested for that provider/device.
 - Real navigation, phone/eCall, health-device and vehicle-convenience providers behind the existing durable OpenClaw intent interface.
-- Signed external vehicle-profile/evidence distribution and multi-vehicle fleet synchronization.
 - Full VSS/KUKSA wire-protocol interoperability; the current semantic broker implements the internal provider/broker model but is not a KUKSA server.
 - Hardened authenticated/TLS LAN deployment profile if remote operator access becomes a product requirement.
 
