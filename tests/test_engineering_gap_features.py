@@ -1,4 +1,5 @@
 import hashlib,json
+import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives import serialization
 from vision_shark.calibration import CalibrationRegistry
@@ -27,11 +28,9 @@ def test_model_registry_binds_dataset_and_evaluation(tmp_path):
 def test_signed_stager_rejects_rollback(tmp_path):
     private=Ed25519PrivateKey.generate();public=private.public_key().public_bytes(serialization.Encoding.Raw,serialization.PublicFormat.Raw);payload=b'model';digest=hashlib.sha256(payload).hexdigest()
     msg=json.dumps({'role':'model','version':1,'sha256':digest},sort_keys=True,separators=(',',':')).encode();s=SignedArtifactStager(tmp_path,public);s.stage('model',1,payload,private.sign(msg))
-    try:s.stage('model',1,payload,private.sign(msg));assert False
-    except ValueError:pass
+    with pytest.raises(ValueError):s.stage('model',1,payload,private.sign(msg))
 
 
 def test_agent_facade_has_no_mutating_tool():
     a=ReadOnlyAgentFacade({'status':lambda:{'ok':True}});assert a.call('status')['ok'];assert a.capabilities()['mutating_tools']==[]
-    try:a.call('transmit');assert False
-    except PermissionError:pass
+    with pytest.raises(PermissionError):a.call('transmit')
