@@ -151,7 +151,7 @@ def communication_health(frames) -> dict:
     buses = {}
     for bus in sorted(bus_frames):
         times = bus_times.get(bus, [])
-        gaps_ms = [(b - a) / 1_000_000 for a, b in zip(times, times[1:]) if b >= a]
+        gaps_ms = [(b - a) / 1_000_000 for a, b in zip(times, times[1:], strict=False) if b >= a]
         duration_s = max(0.0, (times[-1] - times[0]) / 1_000_000_000) if len(times) > 1 else 0.0
         buses[bus] = {
             "frame_count": bus_frames[bus],
