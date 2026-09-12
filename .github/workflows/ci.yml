@@ -11,10 +11,18 @@ jobs:
         with:
           python-version: '3.12'
       - run: python -m pip install --upgrade pip
-      - run: python -m pip install -e '.[dev]'
+      - run: python -m pip install -e '.[dev]' pip-audit cyclonedx-bom cantools
       - run: python -m pytest -q
       - run: python -m compileall -q vision_shark
       - run: node --check vision_shark/web/app.js
+      - name: Dependency vulnerability audit
+        run: pip-audit
+      - name: Generate CycloneDX SBOM
+        run: cyclonedx-py environment --output-format JSON --output-file sbom.cdx.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: vision-shark-sbom
+          path: sbom.cdx.json
       - name: Reject unresolved implementation markers
         run: |
           if grep -RInE 'TODO|FIXME|NotImplementedError|placeholder' vision_shark tests --exclude-dir='__pycache__'; then

@@ -11,6 +11,7 @@ from .production import ProductionGate
 from .transports import list_can_interfaces
 from .live_decoder import LiveDecoder
 from .orchestrator import VisionOrchestrator
+from .middleware import RequestBodyDeadlineMiddleware
 
 class ConnectBody(BaseModel):source:str;interface:str|None=None
 class DecoderBody(BaseModel):dbc_text:str;bus:str='can0';freshness_ms:int=500
@@ -29,6 +30,7 @@ class ShadowBody(BaseModel):
 def create_app(data_dir:Path|str='data'):
     root=Path(data_dir);store=RecordingStore(root);gate=ProductionGate(root)
     app=FastAPI(title='Vision Shark Gateway',version=__version__,docs_url=None,redoc_url=None)
+    app.add_middleware(RequestBodyDeadlineMiddleware,max_body_bytes=4*1024*1024,deadline_s=15.0)
     runtime=Runtime(storage=store);app.state.runtime=runtime;app.state.store=store;app.state.orchestrator=VisionOrchestrator(runtime);web=Path(__file__).parent/'web'
     @app.get('/health')
     def health():return {'status':'ok','version':__version__,'mode':gate.PRODUCT_SCOPE,'raw_vehicle_tx':False,'shadow_autonomy':True}
@@ -80,6 +82,9 @@ def create_app(data_dir:Path|str='data'):
     def remove_decoder():runtime.configure_decoder(None);return {'attached':False}
     @app.get('/api/frames')
     def frames():return {'frames':runtime.recent_frames()}
+    @app.api_route('/api/import/repository',methods=['GET','POST'])
+    @app.api_route('/api/repositories/fetch',methods=['GET','POST'])
+    def retired_repository_import():raise HTTPException(410,'Runtime repository fetching was removed; import reviewed local data artifacts instead')
     @app.post('/api/transmit')
     def deny_transmit():raise HTTPException(403,'Raw vehicle transmit, live driving control and firmware flashing are not exposed')
     if web.exists():

@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=68", "wheel"]
+requires = ["setuptools>=80", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -8,16 +8,15 @@ version = "0.8.0"
 description = "Local-first passive vehicle intelligence, evidence, learning and shadow-autonomy platform"
 requires-python = ">=3.11"
 dependencies = [
-  "fastapi==0.116.1",
-  "uvicorn==0.35.0",
-  "pydantic==2.11.7",
-  "cryptography==45.0.6",
-  "argon2-cffi==25.1.0",
-  "python-multipart==0.0.20",
+  "fastapi>=0.135.1,<1",
+  "uvicorn>=0.41,<1",
+  "pydantic>=2.12.5,<3",
+  "cryptography>=50.0.0,<51",
+  "argon2-cffi>=25.1.0,<26",
 ]
 
 [project.optional-dependencies]
-dev = ["pytest==8.4.1", "httpx==0.28.1"]
+dev = ["pytest>=9.0.3,<10", "httpx>=0.28.1,<1"]
 
 [project.scripts]
 vision-shark = "vision_shark.main:cli"
