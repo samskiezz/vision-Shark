@@ -26,7 +26,7 @@ No upstream code is represented as Vision Shark code unless its licence and prov
 | --- | --- | --- |
 | `python-udsoncan`, `python-doipclient` | Independent bounded ISO 13400/UDS implementation with positive/negative response semantics and read-only allowlist | SecurityAccess, programming, routines, arbitrary writes, ECU reset and coding remain excluded |
 | `mercedes-benz/odxtools` | Reference for a future licensed ODX/PDX naming layer | Not implemented without an appropriate diagnostic data package |
-| `asammdf` | Interface/roadmap reference for large MDF4 measurement workflows | Streaming MDF4/MF4 remains optional integration work |
+| `asammdf` | Optional MDF4/MF4 inspection and bounded `CAN_DataFrame` bus-event import using chunked record reads | Generic measurement signals are not reverse-invented into CAN; remote/error frames remain detected but not losslessly mapped into the current Vision `Frame` model |
 | Apache Arrow / Parquet ecosystem | Optional large-capture analytics path with bounded Arrow batches and Parquet row groups | Implemented and merged; not a mandatory core dependency |
 | MCAP / Foxglove ecosystem | Interchange/design reference for engineering telemetry | Full compressed/indexed MCAP pipeline is not a core dependency |
 | TeslaMate / EV telemetry dashboards | Drive/charge/idle segmentation pattern; Prometheus-style observability landed in later hardening | Tesla cloud polling does not transfer to BYD without a supported API |
@@ -75,9 +75,10 @@ Vision Shark’s OpenClaw integration is a policy/orchestration layer, not a dir
 | Vision Signal Language | `vision_shark/signal_language.py` and `docs/VISION_SIGNAL_LANGUAGE.md` |
 | Prometheus-style metrics | metrics route/module added in the operator hardening tranche |
 | Large Parquet captures | `vision_shark/large_interchange.py`, bounded SQLite/Arrow streaming, CLI import/export |
-| CAN database interchange | `vision_shark/database_interchange.py`, reviewed DBC/ARXML/KCD/SYM/FIBEX inspection and DBC normalization on this branch |
+| CAN database interchange | `vision_shark/database_interchange.py`, reviewed DBC/ARXML/KCD/SYM/FIBEX inspection and DBC normalization |
+| MDF4 raw CAN import | `vision_shark/mf4_interchange.py`, explicit CAN bus-event inspection and chunked `CAN_DataFrame` import on this branch |
 
-These features remain passive/evidence-bound: structural overlap is not vehicle identity, ECU timing clusters are not ECU attribution, and decoded segmentation inherits the validity of the reviewed decoder supplied to it.
+These features remain passive/evidence-bound: structural overlap is not vehicle identity, ECU timing clusters are not ECU attribution, decoded segmentation inherits the validity of the reviewed decoder supplied to it, and measurement channels are not treated as raw CAN without bus-event evidence.
 
 ### Large-capture Parquet tranche
 
@@ -88,6 +89,12 @@ The Parquet integration is deliberately outside the HTTP upload path. `vision_sh
 The optional `database` dependency uses canmatrix as a format adapter rather than making it a core runtime requirement. Vision Shark requires an explicit source format (`dbc`, `arxml`, `kcd`, `sym` or `fibex`), refuses ambiguous generic XML, rejects XML DTD/entity declarations before third-party parsing, hashes the source, records matrix/frame/signal structure and flags features outside the bounded runtime decoder. Conversion produces one sanitized DBC artifact per source matrix, atomically writes each output, hashes it, reloads it through the conversion library to compare core CAN semantics, and independently checks the generated DBC against Vision Shark's runtime DBC parser.
 
 The FIBEX reader is exercised with an independently authored CAN fixture rather than relying on canmatrix's own FIBEX exporter as a round-trip oracle. That distinction matters because upstream canmatrix currently excludes FIBEX from its generic export round-trip test set. Successful ingestion is therefore tested separately from claims of lossless FIBEX export compatibility.
+
+### MDF4 raw CAN tranche
+
+The optional `measurement` dependency uses asammdf to inspect local MDF/MF4 files. Vision Shark classifies a group as raw-CAN importable only when the MDF channel group is marked as a bus event, the acquisition source declares CAN and the record exposes `CAN_DataFrame` with BusChannel, ID, IDE, DataLength, DataBytes and EDL fields. Records are fetched with bounded `record_offset`/`record_count` chunks, every reconstructed row is validated through the Vision `Frame` model, and source SHA-256 evidence is stored with imported recordings. The importer preserves low-valued extended identifiers through IDE rather than guessing from numeric ID width, preserves CAN-FD EDL/BRS/ESI, direction and payload length, and refuses ordinary MDF measurement channels as raw CAN.
+
+`CAN_RemoteFrame` and `CAN_ErrorFrame` groups are surfaced in inspection counts but not silently transformed into the current `Frame` model because the model does not retain every source field needed for lossless representation. This is intentionally reported as a bounded gap rather than hidden data loss.
 
 ## 7. Historical audit snapshot — `main` @ `640c3b9`
 
@@ -106,7 +113,7 @@ The following findings describe the older 12 September snapshot and are preserve
 
 As of the supported `main` base used for this tranche on 13 September 2026:
 
-- `main` includes the passive landscape feature tranche, authenticated supported-server hardening and the bounded Parquet large-capture integration.
+- `main` includes the passive landscape feature tranche, authenticated supported-server hardening, bounded Parquet large-capture integration and reviewed CAN-database interchange.
 - Normal adapter inventory/auto-connect no longer needs hidden DoIP broadcast discovery; active DoIP discovery is an explicit audited opt-in path, and explicit DoIP binding requires routed read-only UDS proof.
 - A discovery VIN is not sufficient vehicle identity evidence by itself.
 - The supported gateway has admin/viewer authentication, HttpOnly SameSite=Strict sessions, CSRF enforcement, request-bound idempotency, protected operational APIs/metrics and security audit events.
@@ -114,13 +121,12 @@ As of the supported `main` base used for this tranche on 13 September 2026:
 
 ### CI truth
 
-The merged Parquet tranche passed the production gate with **115 tests passing** plus dependency resolution, Ruff, Python compile, JavaScript syntax, dependency vulnerability audit, CycloneDX SBOM, implementation-marker rejection and release metadata checks. The CAN-database branch must pass the same gate with both optional engineering-interchange dependency groups before merge; the branch result is not pre-declared here.
+The merged CAN-database tranche passed the production gate with **123 tests passing** plus dependency resolution, Ruff, Python compile, JavaScript syntax, dependency vulnerability audit, CycloneDX SBOM, implementation-marker rejection and release metadata checks. During development of the MDF4 tranche, its functional test suite reached **128 passing tests**; one intermediate CI run then correctly failed the dependency-audit gate because dependency resolution had backtracked the separate `cyclonedx-bom` tooling to an old stack containing vulnerable `urllib3`. The branch replaces that conflicting standalone SBOM tool with current `pip-audit` CycloneDX output and must pass the complete production gate before merge.
 
 ## 9. Remaining optional software integrations
 
 These remain genuine future integrations rather than hidden “completed” capabilities:
 
-- streaming MDF4/MF4 adapter for large ASAM engineering captures;
 - provider-specific live J2534 backend only where passive/listen-only behavior can be enforced and validated;
 - full KUKSA wire-protocol interoperability;
 - real maps/navigation, phone/eCall, health-device and vehicle-convenience OpenClaw providers;
