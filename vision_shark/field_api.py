@@ -5,6 +5,14 @@ from contextlib import contextmanager
 from fastapi import HTTPException
 
 from .all_terrain_research import seed_all_terrain_research
+from .communication_lab import (
+    COMMUNICATION_SAFETY_PROFILE,
+    BenchVoltageProfile,
+    DiagnosticObservation,
+    analyze_diagnostic_observation,
+    communication_health,
+    simulate_voltage_profile,
+)
 from .research_context import (
     DEFAULT_TEST_PROTOCOLS,
     ClaimEvent,
@@ -42,6 +50,51 @@ def install_field_routes(app, recording_store, audit):
     @app.get("/api/research/protocols")
     def research_protocols():
         return {"protocols": DEFAULT_TEST_PROTOCOLS, "raw_vehicle_tx": False}
+
+    @app.get("/api/research/communication/safety-profile")
+    def communication_safety_profile():
+        return COMMUNICATION_SAFETY_PROFILE
+
+    @app.post("/api/research/communication/voltage-replay")
+    def voltage_replay(body: BenchVoltageProfile):
+        result = simulate_voltage_profile(body)
+        audit.append(
+            "research",
+            "synthetic_voltage_replay",
+            {
+                "profile_id": body.profile_id,
+                "environment": body.environment,
+                "sample_rate_hz": body.sample_rate_hz,
+                "duration_ms": body.duration_ms,
+                "physical_vehicle_connected": False,
+                "physical_voltage_output": False,
+            },
+        )
+        return result
+
+    @app.get("/api/research/recordings/{recording_id}/communication-health")
+    def recording_communication_health(recording_id: int):
+        require_recording(recording_id)
+        result = communication_health(recording_store.load_frames(recording_id))
+        result["recording_id"] = recording_id
+        return result
+
+    @app.post("/api/research/diagnostics/analyze-observation")
+    def analyze_diagnostic_capture(body: DiagnosticObservation):
+        result = analyze_diagnostic_observation(body)
+        audit.append(
+            "research",
+            "diagnostic_observation_analyzed",
+            {
+                "source": body.source,
+                "protocol": body.protocol,
+                "module": body.module,
+                "status": result["status"],
+                "response_bytes": result["response_bytes"],
+                "raw_vehicle_tx": False,
+            },
+        )
+        return result
 
     @app.post("/api/research/seed/all-terrain-evx")
     def seed_research():
