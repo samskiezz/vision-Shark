@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import hashlib
 import hmac
-import json
 import secrets
 import threading
 import time
@@ -52,20 +51,30 @@ class SecurityManager:
             return session
     def logout(self,session_id:str|None):
         if not session_id:return
-        with self._lock:session=self._sessions.pop(session_id,None)
+        with self._lock:
+            session=self._sessions.pop(session_id,None)
+            for key in [k for k in self._idempotency if k[0]==session_id]:self._idempotency.pop(key,None)
         if session:self._audit('logout',{'role':session.role})
-    def idempotency_get(self,session_id:str,key:str,request_hash:str):
+    def idempotency_reserve(self,session_id:str,key:str,request_hash:str):
         now=time.time_ns();cache_key=(session_id,key)
         with self._lock:
+            for stale,row in list(self._idempotency.items()):
+                if row['expires_ns']<=now:self._idempotency.pop(stale,None)
             row=self._idempotency.get(cache_key)
-            if row is None:return None
-            if row['expires_ns']<=now:self._idempotency.pop(cache_key,None);return None
-            if row['request_hash']!=request_hash:raise ValueError('Idempotency-Key reused with a different request')
-            return row
-    def idempotency_put(self,session_id:str,key:str,request_hash:str,status:int,headers:list[tuple[bytes,bytes]],body:bytes):
-        if len(body)>2*1024*1024:return
+            if row is not None:
+                if row['request_hash']!=request_hash:raise ValueError('Idempotency-Key reused with a different request')
+                if row.get('pending'):raise RuntimeError('Request with this Idempotency-Key is already in progress')
+                return row
+            self._idempotency[cache_key]={'request_hash':request_hash,'pending':True,'expires_ns':now+15*60*1_000_000_000}
+            while len(self._idempotency)>2048:self._idempotency.pop(next(iter(self._idempotency)))
+            return None
+    def idempotency_complete(self,session_id:str,key:str,request_hash:str,status:int,headers:list[tuple[bytes,bytes]],body:bytes):
+        cache_key=(session_id,key)
+        if len(body)>2*1024*1024:self.idempotency_cancel(session_id,key);return
         safe_headers=[(k,v) for k,v in headers if k.lower() not in {b'set-cookie',b'content-length',b'transfer-encoding'}]
-        with self._lock:self._idempotency[(session_id,key)]={'request_hash':request_hash,'status':int(status),'headers':safe_headers,'body':bytes(body),'expires_ns':time.time_ns()+15*60*1_000_000_000}
+        with self._lock:self._idempotency[cache_key]={'request_hash':request_hash,'pending':False,'status':int(status),'headers':safe_headers,'body':bytes(body),'expires_ns':time.time_ns()+15*60*1_000_000_000}
+    def idempotency_cancel(self,session_id:str,key:str):
+        with self._lock:self._idempotency.pop((session_id,key),None)
 
 class SecurityMiddleware:
     def __init__(self,app,manager:SecurityManager,cookie_name:str='vision_session'):
@@ -104,16 +113,13 @@ class SecurityMiddleware:
         if method not in _MUTATING or path=='/api/auth/logout':return await self.app(scope,receive,send)
         idem=headers.get(b'idempotency-key',b'').decode('utf-8','ignore').strip()
         if not idem or len(idem)>128:return await JSONResponse({'detail':'Idempotency-Key required for state-changing requests'},status_code=428)(scope,receive,send)
-        body=await self._body(receive);request_hash=hashlib.sha256(method.encode()+b'\0'+path.encode()+b'\0'+body).hexdigest()
-        try:cached=self.manager.idempotency_get(session.session_id,idem,request_hash)
+        body=await self._body(receive);query=scope.get('query_string',b'')
+        request_hash=hashlib.sha256(method.encode()+b'\0'+path.encode()+b'\0'+query+b'\0'+body).hexdigest()
+        try:cached=self.manager.idempotency_reserve(session.session_id,idem,request_hash)
         except ValueError as exc:return await JSONResponse({'detail':str(exc)},status_code=409)(scope,receive,send)
+        except RuntimeError as exc:return await JSONResponse({'detail':str(exc)},status_code=409)(scope,receive,send)
         if cached is not None:
-            self.manager._audit('idempotent_replay',{'path':path,'method':method,'role':session.role})
-            async def replay_send(message):
-                if message['type']=='http.response.start':return await send({'type':'http.response.start','status':cached['status'],'headers':cached['headers']})
-                if message['type']=='http.response.body':return await send({'type':'http.response.body','body':cached['body'],'more_body':False})
-                return await send(message)
-            return await replay_send({'type':'http.response.start'} ) if False else await self._send_cached(cached,send)
+            self.manager._audit('idempotent_replay',{'path':path,'method':method,'role':session.role});return await self._send_cached(cached,send)
         sent_start=None;body_parts=[]
         async def replay_receive():return {'type':'http.request','body':body,'more_body':False}
         async def capture_send(message):
@@ -121,9 +127,11 @@ class SecurityMiddleware:
             if message['type']=='http.response.start':sent_start=message
             elif message['type']=='http.response.body':body_parts.append(message.get('body',b''))
             await send(message)
-        await self.app(scope,replay_receive,capture_send)
-        if sent_start is not None and not sent_start.get('status',500)>=500:
-            self.manager.idempotency_put(session.session_id,idem,request_hash,sent_start['status'],list(sent_start.get('headers',[])),b''.join(body_parts))
+        try:await self.app(scope,replay_receive,capture_send)
+        except Exception:
+            self.manager.idempotency_cancel(session.session_id,idem);raise
+        if sent_start is None or sent_start.get('status',500)>=500:self.manager.idempotency_cancel(session.session_id,idem)
+        else:self.manager.idempotency_complete(session.session_id,idem,request_hash,sent_start['status'],list(sent_start.get('headers',[])),b''.join(body_parts))
     @staticmethod
     async def _send_cached(cached,send):
         await send({'type':'http.response.start','status':cached['status'],'headers':cached['headers']+[(b'content-length',str(len(cached['body'])).encode())]})
