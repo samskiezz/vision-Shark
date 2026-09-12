@@ -28,6 +28,7 @@
 - Proof-driven operator UI showing adapter -> vehicle -> communications proof -> ready instead of treating discovery as successful vehicle communication.
 - CLI `doctor` and `probe --prove-diagnostics` for pre-trip adapter/network/DoIP validation.
 - Normal CLI server binding is loopback-only; LAN exposure requires a separately documented authenticated/TLS deployment rather than accidental `0.0.0.0` use.
+- Deterministic application shutdown disconnects active transport and closes recording, audit and provider-intent SQLite stores; lifecycle closure is regression-tested.
 - CI: pytest, compile, JavaScript syntax, Ruff, dependency resolution, implementation-marker rejection, pip-audit and CycloneDX SBOM.
 - Runtime repository fetching retired with explicit HTTP 410 migration responses.
 - Requirements files aligned with the hardened `pyproject.toml` dependency set.
@@ -49,7 +50,6 @@ These can be implemented without inventing vehicle facts, but they are not requi
 - Real navigation, phone/eCall, health-device and vehicle-convenience providers behind the existing durable OpenClaw intent interface.
 - Signed external vehicle-profile/evidence distribution and multi-vehicle fleet synchronization.
 - Full VSS/KUKSA wire-protocol interoperability; the current semantic broker implements the internal provider/broker model but is not a KUKSA server.
-- Application lifecycle/resource-close regression coverage for long-running embedded deployments.
 
 ## Evidence gates software cannot truthfully invent
 
