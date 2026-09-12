@@ -25,14 +25,15 @@ class OpenClawPolicy:
     handed to a separately validated minimum-risk driving controller.
     """
     def authorize(self,action:str,domain:str='',emergency:bool=False)->AgentDecision:
-        action=str(action);domain=str(domain)
+        action=str(action);domain=str(domain);now=time.time_ns()
         if domain in DRIVING_DOMAINS or action in {'steer','brake','accelerate','drive','change_lane','shift_gear'}:
-            if emergency:
-                return AgentDecision('request_minimum_risk',Authority.EMERGENCY.value,'Direct driving authority is isolated from the agent',time.time_ns(),False,'validated_vehicle_controller')
+            if emergency:return AgentDecision('request_minimum_risk',Authority.EMERGENCY.value,'Direct driving authority is isolated from the agent',now,False,'validated_vehicle_controller')
             raise PermissionError('OpenClaw has no direct steering, braking or propulsion authority')
-        if action in CONVENIENCE_ACTIONS:return AgentDecision(action,Authority.CONVENIENCE.value,'configured non-driving vehicle function',time.time_ns())
-        if action in NAVIGATION_ACTIONS:return AgentDecision(action,Authority.NAVIGATION.value,'navigation intent only; no vehicle actuation',time.time_ns())
-        if action in EMERGENCY_ACTIONS:return AgentDecision(action,Authority.EMERGENCY.value,'emergency coordination action',time.time_ns())
+        if action in {'request_minimum_risk','request_safe_stop'}:
+            return AgentDecision(action,Authority.EMERGENCY.value,'Motion request must be executed by an independently validated vehicle controller',now,False,'validated_vehicle_controller')
+        if action in CONVENIENCE_ACTIONS:return AgentDecision(action,Authority.CONVENIENCE.value,'configured non-driving vehicle function',now)
+        if action in NAVIGATION_ACTIONS:return AgentDecision(action,Authority.NAVIGATION.value,'navigation intent only; no vehicle actuation',now)
+        if action in EMERGENCY_ACTIONS:return AgentDecision(action,Authority.EMERGENCY.value,'emergency coordination action',now)
         raise PermissionError('action is not allowlisted')
 
 @dataclass(frozen=True)
@@ -50,9 +51,7 @@ class EmergencyOrchestrator:
     def evaluate(self,obs:EmergencyObservation)->dict:
         trigger=obs.medical_alarm or obs.crash_detected or obs.severe_driver_monitoring_alarm or obs.user_requested_help or obs.driver_responsive is False
         if not trigger:return {'state':'normal','actions':[]}
-        actions=[]
-        # First request a validated minimum-risk stop. This is an intent/handoff, not actuation.
-        actions.append(self.policy.authorize('request_minimum_risk','braking',emergency=True).as_dict())
+        actions=[self.policy.authorize('request_minimum_risk','braking',emergency=True).as_dict()]
         if obs.location_available:
             actions.append(self.policy.authorize('share_location',emergency=True).as_dict())
             actions.append(self.policy.authorize('route_to_hospital',emergency=True).as_dict())
@@ -76,6 +75,8 @@ class OpenClawBridge:
     def execute(self,action,arguments=None,emergency=False):
         decision=self.policy.authorize(action,emergency=emergency);args=dict(arguments or {})
         pools={Authority.CONVENIENCE.value:self.convenience,Authority.NAVIGATION.value:self.navigation,Authority.EMERGENCY.value:self.emergency}
-        fn=pools.get(decision.authority,{}).get(action)
+        fn=pools.get(decision.authority,{}).get(decision.action)
         if fn is None:return {'decision':decision.as_dict(),'status':'handoff_required' if decision.handoff else 'adapter_not_configured'}
-        return {'decision':decision.as_dict(),'status':'executed','result':fn(**args)}
+        result=fn(**args);status='executed'
+        if isinstance(result,dict) and isinstance(result.get('status'),str):status=result['status']
+        return {'decision':decision.as_dict(),'status':status,'result':result}
