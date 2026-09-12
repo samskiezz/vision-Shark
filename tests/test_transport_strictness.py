@@ -1,6 +1,5 @@
 import socket
 import struct
-import time
 import pytest
 from vision_shark.doip_transport import DoIPReadOnlyClient,DoIPError,_packet
 from vision_shark.domain import Frame
