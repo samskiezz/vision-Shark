@@ -1,4 +1,5 @@
 from __future__ import annotations
+from contextlib import asynccontextmanager
 from pathlib import Path
 from fastapi import FastAPI,HTTPException
 from fastapi.responses import FileResponse,PlainTextResponse
@@ -46,10 +47,17 @@ class ShadowBody(BaseModel):
     calibration_valid:bool=True
 
 def create_app(data_dir:Path|str='data'):
-    root=Path(data_dir);store=RecordingStore(root);gate=ProductionGate(root);audit=EventAuditLog(root);intents=IntentBroker(root,audit)
-    app=FastAPI(title='Vision Shark Gateway',version=__version__,docs_url=None,redoc_url=None)
+    root=Path(data_dir);store=RecordingStore(root);gate=ProductionGate(root);audit=EventAuditLog(root);intents=IntentBroker(root,audit);runtime=Runtime(storage=store);orchestrator=VisionOrchestrator(runtime,audit=audit)
+    @asynccontextmanager
+    async def lifespan(_app):
+        try:
+            yield
+        finally:
+            try:await orchestrator.disconnect_auto()
+            finally:
+                intents.close();audit.close();store.close()
+    app=FastAPI(title='Vision Shark Gateway',version=__version__,docs_url=None,redoc_url=None,lifespan=lifespan)
     app.add_middleware(RequestBodyDeadlineMiddleware,max_body_bytes=4*1024*1024,deadline_s=15.0)
-    runtime=Runtime(storage=store);orchestrator=VisionOrchestrator(runtime,audit=audit)
     readiness_provider=lambda:gate.evaluate(orchestrator.status())
     def queue_provider(category,action,provider):
         def enqueue(**arguments):return intents.enqueue(category,action,provider,arguments)
@@ -177,11 +185,13 @@ def create_app(data_dir:Path|str='data'):
     @app.get('/api/recordings/{recording_id}/fingerprint')
     def recording_fingerprint(recording_id:int):return fingerprint_frames(store.load_frames(recording_id))
     @app.get('/api/recordings/{recording_id}/isotp')
-    def recording_isotp(recording_id:int):
-        assembler=PassiveIsoTpAssembler();messages=[];frames=store.load_frames(recording_id)
+    def recording_isotp(recording_id:int,addressing:str='normal',address_extension:int|None=None):
+        try:assembler=PassiveIsoTpAssembler(addressing=addressing,address_extension=address_extension)
+        except ValueError as e:raise HTTPException(400,str(e)) from e
+        messages=[];frames=store.load_frames(recording_id)
         for frame in frames:messages.extend(x.as_dict() for x in assembler.consume(frame))
         if frames:messages.extend(x.as_dict() for x in assembler.expire(frames[-1].ts_ns+assembler.max_gap_ns+1))
-        return {'messages':messages}
+        return {'addressing':assembler.addressing,'address_extension':assembler.address_extension,'messages':messages}
     @app.get('/api/recordings/{recording_id}/export')
     def recording_export(recording_id:int,format:str='candump'):
         try:content=dump_frames(store.load_frames(recording_id),format)
