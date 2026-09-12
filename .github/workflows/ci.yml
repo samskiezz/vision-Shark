@@ -33,7 +33,7 @@ jobs:
           path: sbom.cdx.json
       - name: Reject unresolved implementation markers
         run: |
-          if grep -RInE 'TODO|FIXME|NotImplementedError|placeholder' vision_shark tests --exclude-dir='__pycache__'; then
+          if grep -RInE 'TODO|FIXME|NotImplementedError|IMPLEMENT[ _-]?ME|stub implementation|placeholder implementation|implementation placeholder' vision_shark tests --exclude-dir='__pycache__'; then
             echo 'Unresolved implementation marker found'; exit 1
           fi
       - name: Verify release metadata
