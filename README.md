@@ -30,11 +30,13 @@ pip install -e .
 vision-shark doctor
 ```
 
-For large Parquet engineering captures, install the optional analytics extra:
+Optional engineering interchange features:
 
 ```bash
-pip install -e '.[analytics]'
+pip install -e '.[analytics,database]'
 ```
+
+`analytics` enables large Parquet captures. `database` enables reviewed DBC, ARXML, KCD, SYM and FIBEX CAN-database ingestion/normalization.
 
 ## ENET / DoIP pre-trip proof
 
@@ -89,6 +91,7 @@ Passive CAN/CAN-FD and ENET are intentionally different flows:
 - SQLite WAL recording store with receive-drop evidence and deterministic replay.
 - candump, CSV, JSONL, Vector ASC and PCAN TRC import paths.
 - Optional streaming Parquet import/export with bounded SQLite reads, bounded Arrow batches/row groups, schema validation, atomic output replacement and SHA-256 export evidence.
+- Optional DBC/ARXML/KCD/SYM/FIBEX inspection and normalization to one DBC per CAN matrix. Inputs are explicitly typed; generic XML is rejected as ambiguous; XML DTD/entity declarations are rejected before parsing; source/output hashes and conversion-fidelity results are reported.
 - Passive changed-byte sniffer view.
 - Event-anchored bit-change discovery, timing/entropy anomaly comparison and ECU clock-skew membership hypotheses.
 - Passive ISO-TP reassembly with normal/extended addressing, bounds, sequence validation and timeout/supersession handling.
@@ -106,7 +109,16 @@ vision-shark parquet-export --data-dir data --recording-id 12 --output capture.p
 vision-shark parquet-import --data-dir data --input capture.parquet
 ```
 
-`vision-shark doctor` reports whether the Parquet analytics dependency is available.
+Reviewed CAN-database files also use the CLI:
+
+```bash
+vision-shark db-inspect --input network.arxml --format arxml
+vision-shark db-convert --input network.arxml --format arxml --to dbc --output-dir converted
+```
+
+For XML inputs, specify `arxml`, `kcd` or `fibex` explicitly. The converter reports whether core CAN semantics survived DBC normalization and separately whether the generated DBC fits Vision Shark's bounded runtime decoder subset.
+
+`vision-shark doctor` reports whether the optional Parquet and CAN-database dependencies are available.
 
 ## OpenClaw
 
@@ -120,7 +132,7 @@ The repository contains an executable non-actuating autonomy R&D pipeline with t
 
 ## Production truth
 
-The software release scope is `production-passive-shadow`. CI validates Python tests, compileability, JavaScript syntax, dependency resolution, Ruff static checks, dependency vulnerability audit, CycloneDX SBOM generation, implementation-marker rejection and version consistency. CI also installs and exercises the optional Parquet analytics path.
+The software release scope is `production-passive-shadow`. CI validates Python tests, compileability, JavaScript syntax, dependency resolution, Ruff static checks, dependency vulnerability audit, CycloneDX SBOM generation, implementation-marker rejection and version consistency. CI installs and exercises both optional engineering-interchange dependency groups.
 
 **No repository test can prove an Australian BYD Shark 6 will answer your ENET adapter.** That proof requires the actual vehicle/adapter. Exact Shark bus topology, ECU logical addresses, supported DIDs, firmware variants, signal definitions and any physical actuation path remain evidence gates until measured on the target vehicle.
 
