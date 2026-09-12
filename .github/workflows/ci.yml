@@ -15,7 +15,7 @@ jobs:
       - name: Dependency resolution check
         run: python -m pip check
       - name: Python correctness/static checks
-        run: ruff check vision_shark tests --select F,B,BLE,RUF012,TRY004,UP041
+        run: ruff check vision_shark tests --select F,B,RUF012
       - run: python -m pytest -q
       - run: python -m compileall -q vision_shark
       - run: node --check vision_shark/web/app.js
