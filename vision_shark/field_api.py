@@ -27,6 +27,12 @@ from .research_context import (
     VehicleModification,
     matched_recording_report,
 )
+from .startup_comm_lab import (
+    FlashTransportTrace,
+    StartupCommunicationTrace,
+    analyze_flash_transport_trace,
+    analyze_startup_communication,
+)
 
 
 def install_field_routes(app, recording_store, audit):
@@ -68,6 +74,42 @@ def install_field_routes(app, recording_store, audit):
                 "duration_ms": body.duration_ms,
                 "physical_vehicle_connected": False,
                 "physical_voltage_output": False,
+            },
+        )
+        return result
+
+    @app.post("/api/research/communication/startup/analyze")
+    def startup_communication_analysis(body: StartupCommunicationTrace):
+        result = analyze_startup_communication(body)
+        audit.append(
+            "research",
+            "startup_communication_trace_analyzed",
+            {
+                "trace_id": body.trace_id,
+                "event_count": len(body.events),
+                "voltage_samples": len(body.voltage),
+                "physical_vehicle_connected": body.physical_vehicle_connected,
+                "fault_injection_commanded": body.fault_injection_commanded,
+                "raw_vehicle_tx": False,
+            },
+        )
+        return result
+
+    @app.post("/api/research/communication/flash-trace/analyze")
+    def flash_transport_analysis(body: FlashTransportTrace):
+        result = analyze_flash_transport_trace(body)
+        audit.append(
+            "research",
+            "flash_transport_trace_analyzed",
+            {
+                "trace_id": body.trace_id,
+                "transport": body.transport,
+                "source": body.source,
+                "event_count": len(body.events),
+                "physical_vehicle_connected": body.physical_vehicle_connected,
+                "generated_vehicle_requests": body.contains_generated_vehicle_requests,
+                "raw_vehicle_tx": False,
+                "flash_command_generation": False,
             },
         )
         return result
