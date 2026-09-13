@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections import defaultdict
 from typing import Literal
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, model_validator
 
 
 class StartupBusEvent(BaseModel):
@@ -76,11 +76,6 @@ class FlashTransportTrace(BaseModel):
         return self
 
 
-@field_validator("events", mode="before", check_fields=False)
-def _unused_validator(value):
-    return value
-
-
 def _sorted_events(events):
     return sorted(events, key=lambda item: item.ts_ms)
 
@@ -125,7 +120,10 @@ def analyze_startup_communication(trace: StartupCommunicationTrace | dict) -> di
             if any(abs(failure_ts - low_ts) <= 250 for low_ts in low_times):
                 correlated_failures += 1
 
-    first_any = min((item["first_observed_ms"] for item in modules.values() if item["first_observed_ms"] is not None), default=None)
+    first_any = min(
+        (item["first_observed_ms"] for item in modules.values() if item["first_observed_ms"] is not None),
+        default=None,
+    )
     return {
         "trace_id": value.trace_id,
         "first_bus_activity_ms": first_any,
@@ -141,7 +139,10 @@ def analyze_startup_communication(trace: StartupCommunicationTrace | dict) -> di
         "read_only_analysis": True,
         "raw_vehicle_tx": False,
         "physical_voltage_output": False,
-        "interpretation_guard": "Timing correlation can identify startup communication windows and brownout sensitivity, but does not establish a bypass, unlock or safe flash window.",
+        "interpretation_guard": (
+            "Timing correlation can identify startup communication windows and brownout sensitivity, "
+            "but does not establish a bypass, unlock or safe flash window."
+        ),
     }
 
 
@@ -158,7 +159,9 @@ def analyze_flash_transport_trace(trace: FlashTransportTrace | dict) -> dict:
     transport_errors = sum(1 for item in events if item.kind == "transport_error")
     disconnects = [item for item in events if item.kind == "disconnect"]
     reconnects = [item for item in events if item.kind == "reconnect"]
-    completed_blocks = sorted({item.block_index for item in events if item.kind == "block_complete" and item.block_index is not None})
+    completed_blocks = sorted(
+        {item.block_index for item in events if item.kind == "block_complete" and item.block_index is not None}
+    )
 
     recovery_delays_ms = []
     for disconnect in disconnects:
@@ -188,5 +191,8 @@ def analyze_flash_transport_trace(trace: FlashTransportTrace | dict) -> dict:
         "read_only_analysis": True,
         "raw_vehicle_tx": False,
         "flash_command_generation": False,
-        "interpretation_guard": "This analyzes captured or simulated transport behavior only. It does not generate programming requests, SecurityAccess, unlocks or ECU writes.",
+        "interpretation_guard": (
+            "This analyzes captured or simulated transport behavior only. It does not generate programming requests, "
+            "SecurityAccess, unlocks or ECU writes."
+        ),
     }
