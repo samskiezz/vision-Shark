@@ -1,10 +1,12 @@
 import base64
+import json
 
 import pytest
 from fastapi.testclient import TestClient
 
 from vision_shark.api import create_app
 from vision_shark.tuning_artifacts import export_ihex, export_srec
+from vision_shark.tuning_cli import main as tuning_cli_main
 from vision_shark.tuning_core import (
     CalibrationDefinition,
     MapDefinition,
@@ -158,3 +160,31 @@ def test_tuning_api_binary_diff(tmp_path):
         assert response.status_code == 200
         assert response.json()["regions"] == 1
         assert response.json()["changed_bytes"] == 1
+
+
+def test_tuning_cli_builds_candidate_file(tmp_path):
+    source = tmp_path / "stock.bin"
+    definition_path = tmp_path / "definition.json"
+    edits_path = tmp_path / "edits.json"
+    output = tmp_path / "candidate.bin"
+    source.write_bytes(bytes.fromhex("006400c8012c0190"))
+    definition_path.write_text(json.dumps(definition().model_dump(mode="json")), encoding="utf-8")
+    edits_path.write_text(json.dumps([{"map_id": "torque.limit", "values": [12, 24, 36, 48]}]), encoding="utf-8")
+
+    status = tuning_cli_main(
+        [
+            "build",
+            "--input",
+            str(source),
+            "--format",
+            "bin",
+            "--definition",
+            str(definition_path),
+            "--edits",
+            str(edits_path),
+            "--output",
+            str(output),
+        ]
+    )
+    assert status == 0
+    assert output.read_bytes() == bytes.fromhex("007800f0016801e0")
