@@ -23,6 +23,21 @@ from .shark_oem_reference import (
     search_reference,
     summary,
 )
+from .shark_oem_supplement import (
+    BODY_MODULE_REFERENCE,
+    CIRCUIT_TESTING,
+    CONNECTOR_TYPES,
+    DIAGNOSTIC_ARCHITECTURE,
+    DTC_ENGINE,
+    FULL_DIAGRAM_INDEX,
+    OTHER_BODY_MODULES,
+    ROOF_HARNESS,
+    SENSORS,
+    SERVICE_MANUAL_STACK,
+    SVG_SYSTEM,
+    search_supplement,
+    supplement_summary,
+)
 
 
 def install_shark_oem_routes(app):
@@ -37,7 +52,9 @@ def install_shark_oem_routes(app):
 
     @app.get('/api/reference/shark6/summary')
     def shark6_reference_summary():
-        return summary()
+        result = summary()
+        result['supplement'] = supplement_summary()
+        return result
 
     @app.get('/api/reference/shark6/connectors')
     def shark6_connectors():
@@ -50,6 +67,9 @@ def install_shark_oem_routes(app):
     def shark6_connector(connector_id: str):
         result = connector(connector_id)
         if result is None:
+            supplement = BODY_MODULE_REFERENCE.get(connector_id)
+            if supplement is not None:
+                return {'connector_id': connector_id, **supplement, 'source': dict(SOURCE)}
             raise HTTPException(404, 'connector not found')
         return result
 
@@ -66,17 +86,34 @@ def install_shark_oem_routes(app):
 
     @app.get('/api/reference/shark6/search')
     def shark6_search(q: str = Query(min_length=1, max_length=120), limit: int = Query(default=50, ge=1, le=200)):
-        return {'query': q, 'results': search_reference(q, limit), 'source': dict(SOURCE)}
+        primary = search_reference(q, limit)
+        extra = search_supplement(q, limit)
+        seen: set[tuple[str, str]] = set()
+        merged = []
+        for item in [*primary, *extra]:
+            key = (item['kind'], item['key'])
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append(item)
+            if len(merged) >= limit:
+                break
+        return {'query': q, 'results': merged, 'source': dict(SOURCE)}
 
     @app.get('/api/reference/shark6/modules')
     def shark6_modules():
-        return {'source': dict(SOURCE), 'modules': [{'module_id': key, 'name': value} for key, value in sorted(MODULES.items())]}
+        return {
+            'source': dict(SOURCE),
+            'modules': [{'module_id': key, 'name': value} for key, value in sorted(MODULES.items())],
+            'body_module_summaries': [{'module_id': key, 'summary': value} for key, value in sorted(OTHER_BODY_MODULES.items())],
+        }
 
     @app.get('/api/reference/shark6/diagrams')
     def shark6_diagrams():
         return {
             'source': dict(SOURCE),
-            'diagrams': [{'diagram_id': item.diagram_id, 'title': item.title} for item in DIAGRAMS],
+            'diagrams': [{'diagram_id': key, 'title': value} for key, value in FULL_DIAGRAM_INDEX.items()],
+            'core_diagrams': [{'diagram_id': item.diagram_id, 'title': item.title} for item in DIAGRAMS],
         }
 
     @app.get('/api/reference/shark6/harnesses')
@@ -110,4 +147,31 @@ def install_shark_oem_routes(app):
         return {
             'source': dict(SOURCE),
             'components': [{'connector_id': key, **value} for key, value in sorted(ENGINE_COMPONENTS.items())],
+        }
+
+    @app.get('/api/reference/shark6/body-connectors')
+    def shark6_body_connectors():
+        return {'source': dict(SOURCE), 'connectors': [{'connector_id': key, **value} for key, value in sorted(BODY_MODULE_REFERENCE.items())]}
+
+    @app.get('/api/reference/shark6/roof-harness')
+    def shark6_roof_harness():
+        return {'source': dict(SOURCE), **ROOF_HARNESS}
+
+    @app.get('/api/reference/shark6/sensors')
+    def shark6_sensors():
+        return {'source': dict(SOURCE), 'sensors': [{'sensor_id': key, 'name': value} for key, value in sorted(SENSORS.items())]}
+
+    @app.get('/api/reference/shark6/connector-types')
+    def shark6_connector_types():
+        return {'source': dict(SOURCE), 'connector_types': CONNECTOR_TYPES}
+
+    @app.get('/api/reference/shark6/manual-architecture')
+    def shark6_manual_architecture():
+        return {
+            'source': dict(SOURCE),
+            'software_stack': SERVICE_MANUAL_STACK,
+            'dtc_engine': DTC_ENGINE,
+            'svg_system': SVG_SYSTEM,
+            'diagnostic_architecture': DIAGNOSTIC_ARCHITECTURE,
+            'circuit_testing': CIRCUIT_TESTING,
         }
