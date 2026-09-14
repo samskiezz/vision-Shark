@@ -72,6 +72,9 @@ class ProductionGate:
                 "learning": True,
                 "doip_discovery": True,
                 "doip_read_only_diagnostics": True,
+                "shark6_oem_reference_registry": True,
+                "shark6_connector_pin_search": True,
+                "shark6_network_topology_reference": True,
                 "offline_calibration_authoring": True,
                 "calibration_artifact_formats": ["bin", "ihex", "srec"],
                 "calibration_map_decode": True,
@@ -91,6 +94,7 @@ class ProductionGate:
             "external_validation_gates": [
                 "Australian BYD Shark 6 physical ENET/DoIP response and exact gateway behavior",
                 "Australian BYD Shark 6 exact CAN/CAN-FD topology, bitrates, pinout and signal map",
+                "source-claimed Circuit Atlas connector and pin data promoted only after independent or physical validation",
                 "exact ECU identities, firmware variants and diagnostic addressing for the target vehicle build",
                 "reviewed calibration definitions and checksum algorithms for each supported ECU/software family",
                 "production camera/radar/lidar sensor hardware, time synchronization and calibration",
