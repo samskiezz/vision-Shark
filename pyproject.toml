@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "vision-shark-app"
-version = "0.9.0"
-description = "Local-first passive vehicle intelligence, evidence, diagnostics, learning and shadow-autonomy platform"
+version = "0.10.0"
+description = "Vehicle intelligence, evidence, diagnostics, learning, shadow-autonomy and offline calibration workspace"
 requires-python = ">=3.11"
 dependencies = [
   "fastapi>=0.135.1,<1",
@@ -23,6 +23,7 @@ measurement = ["asammdf>=8.7,<9"]
 
 [project.scripts]
 vision-shark = "vision_shark.main:cli"
+vision-shark-tune = "vision_shark.tuning_cli:cli"
 
 [tool.setuptools]
 include-package-data = true
