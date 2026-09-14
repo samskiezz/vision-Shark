@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "vision-shark-app"
-version = "0.10.0"
+version = "0.9.0"
 description = "Vehicle intelligence, evidence, diagnostics, learning, shadow-autonomy and offline calibration workspace"
 requires-python = ">=3.11"
 dependencies = [
