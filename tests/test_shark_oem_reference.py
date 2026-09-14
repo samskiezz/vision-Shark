@@ -34,7 +34,7 @@ def test_search_finds_pin_network_module_diagram_and_roof_data():
     pin_hits = search_reference('main relay control')
     assert any(item['kind'] == 'pin' and item['key'] == 'A01(A):23' for item in pin_hits)
 
-    network_hits = search_reference('energy network')
+    network_hits = search_reference('energy_network')
     assert any(item['kind'] == 'network' and item['key'] == 'energy_network' for item in network_hits)
 
     module_hits = search_reference('Battery Pack')
