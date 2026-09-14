@@ -6,6 +6,7 @@ import binascii
 from fastapi import HTTPException
 from pydantic import BaseModel, Field
 
+from .tuning_artifacts import export_image
 from .tuning_core import (
     CalibrationDefinition,
     MapEdit,
@@ -32,6 +33,7 @@ class CalibrationDecodeBody(ArtifactBody):
 
 class CalibrationPatchBody(CalibrationDecodeBody):
     edits: list[MapEdit] = Field(min_length=1, max_length=4096)
+    output_format: str | None = Field(default=None, max_length=16)
 
 
 class BinaryDiffBody(BaseModel):
@@ -96,8 +98,11 @@ def install_tuning_routes(app, audit):
         try:
             patch = build_patch(image, body.definition, body.edits)
             candidate = apply_patch(image, patch)
+            output_format, rendered = export_image(candidate, body.output_format)
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
+        if len(rendered) > _MAX_API_ARTIFACT_BYTES:
+            raise HTTPException(413, "rendered artifact exceeds 6 MiB HTTP response limit")
         result = {
             "baseline_sha256": image.sha256(),
             "candidate_sha256": candidate.sha256(),
@@ -106,6 +111,8 @@ def install_tuning_routes(app, audit):
             "changed_regions": len(patch),
             "changed_bytes": sum(len(bytes.fromhex(item.after_hex)) for item in patch),
             "patch": [item.model_dump(mode="json") for item in patch],
+            "output_format": output_format,
+            "candidate_base64": base64.b64encode(rendered).decode("ascii"),
             "scope": "offline calibration authoring",
             "vehicle_programming": False,
             "raw_vehicle_tx": False,
@@ -119,6 +126,7 @@ def install_tuning_routes(app, audit):
                 "candidate_sha256": result["candidate_sha256"],
                 "changed_regions": result["changed_regions"],
                 "changed_bytes": result["changed_bytes"],
+                "output_format": output_format,
             },
         )
         return result
