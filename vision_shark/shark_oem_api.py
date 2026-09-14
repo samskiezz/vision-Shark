@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from fastapi import HTTPException, Query
+from fastapi.responses import FileResponse
 
 from .shark_oem_reference import (
     CONNECTORS,
@@ -23,6 +26,15 @@ from .shark_oem_reference import (
 
 
 def install_shark_oem_routes(app):
+    web = Path(__file__).parent / 'web'
+
+    @app.get('/reference/shark6')
+    def shark6_reference_page():
+        page = web / 'shark_reference.html'
+        if not page.is_file():
+            raise HTTPException(404, 'reference page unavailable')
+        return FileResponse(page)
+
     @app.get('/api/reference/shark6/summary')
     def shark6_reference_summary():
         return summary()
