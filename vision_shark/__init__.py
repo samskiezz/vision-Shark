@@ -1,2 +1,2 @@
-"""Vision Shark passive vehicle intelligence and shadow-autonomy platform."""
+"""Vision Shark vehicle intelligence, research and offline calibration platform."""
 __version__ = "0.9.0"
