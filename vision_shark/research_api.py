@@ -14,6 +14,7 @@ from .field_api import install_field_routes
 from .metrics import prometheus_metrics
 from .platform_match import match_platforms
 from .segmentation import segment_recording
+from .shark_oem_api import install_shark_oem_routes
 from .sniffer import sniffer_view
 from .trace_import import load_trace
 from .tuning_api import install_tuning_routes
@@ -97,3 +98,4 @@ def install_research_routes(app,runtime,store,audit,orchestrator):
 
     install_field_routes(app,store,audit)
     install_tuning_routes(app,audit)
+    install_shark_oem_routes(app)
