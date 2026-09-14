@@ -1,0 +1,75 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Vision Shark · OEM Circuit Atlas</title>
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<main>
+  <header>
+    <div>
+      <h1>SHARK 6 CIRCUIT ATLAS</h1>
+      <div class="sub">Searchable connector, network, module, harness and diagram reference</div>
+    </div>
+    <div class="header-actions"><a href="/">BACK TO VISION SHARK</a></div>
+  </header>
+
+  <section class="card hero">
+    <div class="panel-title">
+      <div>
+        <h2>OEM Reference Registry</h2>
+        <p class="sub">Structured from the supplied BYD Shark 6 Pickup Truck Circuit Atlas extraction. Records remain source-claimed until independently or physically validated.</p>
+      </div>
+      <span id="referenceState" class="badge warn">LOADING</span>
+    </div>
+    <div id="referenceSummary" class="result">Loading reference summary…</div>
+  </section>
+
+  <section class="card">
+    <h2>Search</h2>
+    <p class="sub">Search connector IDs, ECU/module names, pin functions, CAN networks, diagram IDs, harnesses and ground points.</p>
+    <div class="actions">
+      <input id="referenceQuery" style="min-width:280px;flex:1" placeholder="Examples: A01(A), VCU, energy network, DT778406, CAN_H">
+      <button id="referenceSearch" class="primary">SEARCH REFERENCE</button>
+    </div>
+    <div id="referenceResults" class="result">Enter a connector, module, pin function, network or diagram.</div>
+  </section>
+
+  <section class="grid">
+    <div class="card">
+      <h2>Quick Connector Lookup</h2>
+      <div class="actions">
+        <input id="connectorId" placeholder="G03 / A01(A) / K49(A)">
+        <button id="connectorLookup">OPEN CONNECTOR</button>
+      </div>
+      <pre id="connectorResult">No connector selected.</pre>
+    </div>
+    <div class="card">
+      <h2>Network Topology</h2>
+      <div class="actions">
+        <select id="networkSelect"><option value="">Loading…</option></select>
+      </div>
+      <pre id="networkResult">Select a network.</pre>
+    </div>
+  </section>
+
+  <section class="grid">
+    <div class="card"><h2>Modules</h2><div id="moduleList" class="result">Loading…</div></div>
+    <div class="card"><h2>Diagram Index</h2><div id="diagramList" class="result">Loading…</div></div>
+  </section>
+
+  <section class="grid">
+    <div class="card"><h2>Harness Codes</h2><div id="harnessList" class="result">Loading…</div></div>
+    <div class="card"><h2>Wire Colours</h2><div id="wireList" class="result">Loading…</div></div>
+  </section>
+
+  <section class="card">
+    <h2>Scope</h2>
+    <p class="sub">This screen is a wiring/diagnostic reference and evidence registry. It does not execute voltage glitching, security bypasses, live ECU writes or fault-injection sequences.</p>
+  </section>
+</main>
+<script src="/static/shark_reference.js"></script>
+</body>
+</html>
