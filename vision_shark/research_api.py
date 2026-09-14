@@ -16,6 +16,7 @@ from .platform_match import match_platforms
 from .segmentation import segment_recording
 from .sniffer import sniffer_view
 from .trace_import import load_trace
+from .tuning_api import install_tuning_routes
 from .uds_reference import reference as uds_reference
 
 class EventDiffBody(BaseModel):
@@ -95,3 +96,4 @@ def install_research_routes(app,runtime,store,audit,orchestrator):
         except (ValueError,RuntimeError,PermissionError,OSError) as exc:raise HTTPException(409,str(exc)) from exc
 
     install_field_routes(app,store,audit)
+    install_tuning_routes(app,audit)
