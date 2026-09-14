@@ -4,6 +4,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from vision_shark.api import create_app
+from vision_shark.tuning_artifacts import export_ihex, export_srec
 from vision_shark.tuning_core import (
     CalibrationDefinition,
     MapDefinition,
@@ -86,6 +87,17 @@ def test_srec_parser_validates_checksum():
         MemoryImage.from_srec(b"S107100001020304DF\n")
 
 
+def test_ihex_and_srec_export_round_trip():
+    original = MemoryImage.from_bin(b"\x01\x02\x03\x04", base_address=0x10000)
+    ihex = export_ihex(original)
+    restored_hex = MemoryImage.from_ihex(ihex)
+    assert restored_hex.read(0x10000, 4) == b"\x01\x02\x03\x04"
+
+    srec = export_srec(original)
+    restored_srec = MemoryImage.from_srec(srec)
+    assert restored_srec.read(0x10000, 4) == b"\x01\x02\x03\x04"
+
+
 def test_map_bounds_and_overlap_protection():
     image = MemoryImage.from_bin(b"\x00" * 16)
     bad = CalibrationDefinition(
@@ -127,6 +139,8 @@ def test_tuning_api_decodes_and_builds_patch(tmp_path):
         assert result["changed_regions"] == 1
         assert result["changed_bytes"] == 8
         assert result["baseline_sha256"] != result["candidate_sha256"]
+        assert base64.b64decode(result["candidate_base64"]) == bytes.fromhex("007800f0016801e0")
+        assert result["output_format"] == "bin"
         assert result["vehicle_programming"] is False
 
 
