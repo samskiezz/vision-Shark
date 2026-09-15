@@ -56,6 +56,8 @@ class HybridShadowBody(BaseModel):
     model_age_s:float=Field(default=0,ge=0,le=60)
     calibration_valid:bool=True
     model_latency_ms:float=Field(default=0,ge=0,le=10000)
+class TemporalShadowBody(HybridShadowBody):
+    timestamp_s:float=Field(ge=0,le=1e12)
 
 def create_app(data_dir:Path|str='data'):
     root=Path(data_dir);store=RecordingStore(root);gate=ProductionGate(root);audit=EventAuditLog(root);intents=IntentBroker(root,audit);runtime=Runtime(storage=store);orchestrator=VisionOrchestrator(runtime,audit=audit)
@@ -111,6 +113,14 @@ def create_app(data_dir:Path|str='data'):
     def vision_shadow(body:ShadowBody):return orchestrator.shadow_autonomy(body.model_dump())
     @app.post('/api/vision/autonomy/hybrid-shadow')
     def vision_hybrid_shadow(body:HybridShadowBody):return orchestrator.hybrid_shadow_autonomy(body.model_dump())
+    @app.get('/api/vision/autonomy/tesla-oss-profile')
+    def vision_tesla_oss_profile():return orchestrator.tesla_oss_profile()
+    @app.post('/api/vision/autonomy/temporal-shadow')
+    def vision_temporal_shadow(body:TemporalShadowBody):
+        try:return orchestrator.temporal_shadow_step(body.model_dump())
+        except ValueError as exc:raise HTTPException(409,str(exc)) from exc
+    @app.post('/api/vision/autonomy/temporal-shadow/reset')
+    def vision_temporal_shadow_reset():return orchestrator.temporal_shadow_reset()
     @app.post('/api/diagnostics/doip/dids')
     async def doip_dids(body:DiagnosticDidsBody):
         try:return await orchestrator.read_doip_dids(body.dids)
