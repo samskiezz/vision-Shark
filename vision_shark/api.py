@@ -45,6 +45,17 @@ class ShadowBody(BaseModel):
     vehicle_state:dict;detections:list[dict]=Field(default_factory=list);imu:dict|None=None;gnss:dict|None=None
     lanes:list[dict]=Field(default_factory=list);controls:list[dict]=Field(default_factory=list)
     sensor_age_s:float=Field(default=0,ge=0,le=60);model_latency_ms:float=Field(default=0,ge=0,le=10000);calibration_valid:bool=True
+class HybridShadowBody(BaseModel):
+    ego_speed_ms:float=Field(ge=0,le=80)
+    detections:list[dict]=Field(default_factory=list,max_length=512)
+    lane_path:list[dict]=Field(default_factory=list,max_length=512)
+    model_path:list[dict]=Field(default_factory=list,max_length=512)
+    cruise_target_ms:float|None=Field(default=None,ge=0,le=80)
+    model_longitudinal:dict|None=None
+    world_age_s:float=Field(default=0,ge=0,le=60)
+    model_age_s:float=Field(default=0,ge=0,le=60)
+    calibration_valid:bool=True
+    model_latency_ms:float=Field(default=0,ge=0,le=10000)
 
 def create_app(data_dir:Path|str='data'):
     root=Path(data_dir);store=RecordingStore(root);gate=ProductionGate(root);audit=EventAuditLog(root);intents=IntentBroker(root,audit);runtime=Runtime(storage=store);orchestrator=VisionOrchestrator(runtime,audit=audit)
@@ -98,6 +109,8 @@ def create_app(data_dir:Path|str='data'):
         except ValueError as exc:raise HTTPException(409,str(exc)) from exc
     @app.post('/api/vision/autonomy/shadow')
     def vision_shadow(body:ShadowBody):return orchestrator.shadow_autonomy(body.model_dump())
+    @app.post('/api/vision/autonomy/hybrid-shadow')
+    def vision_hybrid_shadow(body:HybridShadowBody):return orchestrator.hybrid_shadow_autonomy(body.model_dump())
     @app.post('/api/diagnostics/doip/dids')
     async def doip_dids(body:DiagnosticDidsBody):
         try:return await orchestrator.read_doip_dids(body.dids)
