@@ -77,6 +77,7 @@ class ProductionGate:
                 "world_model_onnx_export": True,
                 "camera_calibration_registry": True,
                 "camera_geometry_conditioning": True,
+                "ray_aware_spatial_bev_world_model": True,
                 "deterministic_learning_provenance": True,
                 "offline_world_model_evaluation": True,
                 "hard_case_ranking": True,
