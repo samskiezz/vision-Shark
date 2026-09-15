@@ -2,6 +2,9 @@ name: CI
 on: [push, pull_request]
 permissions:
   contents: read
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
   production-gate:
     runs-on: ubuntu-24.04
@@ -44,3 +47,20 @@ jobs:
           p=tomllib.loads(pathlib.Path('pyproject.toml').read_text())
           assert p['project']['version']==__version__=='0.9.0'
           PY
+
+  learning-smoke:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+      - run: python -m pip install --upgrade pip
+      - name: Install CPU PyTorch
+        run: python -m pip install --index-url https://download.pytorch.org/whl/cpu 'torch>=2.4,<3'
+      - name: Install learning runtime
+        run: python -m pip install -e '.[dev]' 'onnx>=1.16,<2' 'onnxscript>=0.5,<1' 'onnxruntime>=1.19,<2' 'pillow>=10,<13'
+      - name: Learning dependency resolution check
+        run: python -m pip check
+      - name: Spatial BEV forward/backward and ONNX smoke
+        run: python -m pytest -q tests/test_spatial_bev_world_model.py tests/test_camera_geometry_learning.py

@@ -23,6 +23,7 @@ measurement = ["asammdf>=8.7,<9"]
 learning = [
   "torch>=2.4,<3",
   "onnx>=1.16,<2",
+  "onnxscript>=0.5,<1",
   "onnxruntime>=1.19,<2",
   "pillow>=10,<13",
 ]
