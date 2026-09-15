@@ -131,19 +131,70 @@ def build_sequence_windows(
     return windows
 
 
-def _nested_tensor(value: Any, torch, *, dtype=None):
-    if value is None:
-        return None
-    if isinstance(value, dict):
-        return {key: _nested_tensor(item, torch, dtype=dtype) for key, item in value.items()}
-    if isinstance(value, (list, tuple)):
-        try:
-            return torch.as_tensor(value, dtype=dtype)
-        except (TypeError, ValueError):
-            return [_nested_tensor(item, torch, dtype=dtype) for item in value]
-    if isinstance(value, (int, float, bool)):
-        return torch.as_tensor(value, dtype=dtype)
-    return value
+def _points_tensor(value: Any, torch):
+    rows = []
+    for point in value or []:
+        if isinstance(point, dict):
+            rows.append([
+                float(point.get("x", 0.0) or 0.0),
+                float(point.get("y", 0.0) or 0.0),
+                float(point.get("speed", point.get("speed_ms", 0.0)) or 0.0),
+                float(point.get("accel", point.get("acceleration", 0.0)) or 0.0),
+            ])
+        else:
+            row = list(point)
+            rows.append([float(row[index]) if index < len(row) else 0.0 for index in range(4)])
+    if not rows:
+        raise ValueError("trajectory label requires at least one point")
+    return torch.tensor(rows, dtype=torch.float32)
+
+
+def _agents_tensor(value: Any, torch):
+    if not value:
+        raise ValueError("agent_forecasts label cannot be empty")
+    agents = []
+    mask = []
+    maximum_steps = max(len(item.get("points", [])) if isinstance(item, dict) else len(item) for item in value)
+    for item in value:
+        points = item.get("points", []) if isinstance(item, dict) else item
+        rows = []
+        active = []
+        for point in points:
+            if isinstance(point, dict):
+                rows.append([
+                    float(point.get("x", 0.0) or 0.0),
+                    float(point.get("y", 0.0) or 0.0),
+                    float(point.get("vx", 0.0) or 0.0),
+                    float(point.get("vy", 0.0) or 0.0),
+                ])
+            else:
+                row = list(point)
+                rows.append([float(row[index]) if index < len(row) else 0.0 for index in range(4)])
+            active.append(1.0)
+        while len(rows) < maximum_steps:
+            rows.append([0.0, 0.0, 0.0, 0.0])
+            active.append(0.0)
+        agents.append(rows)
+        mask.append(active)
+    return torch.tensor(agents, dtype=torch.float32), torch.tensor(mask, dtype=torch.float32)
+
+
+def _pack_targets(labels: dict[str, Any], torch) -> dict[str, Any]:
+    targets: dict[str, Any] = {}
+    for key, value in labels.items():
+        if value is None:
+            continue
+        if key == "ego_trajectory":
+            targets[key] = _points_tensor(value, torch)
+        elif key == "agent_forecasts":
+            agents, mask = _agents_tensor(value, torch)
+            targets[key] = agents
+            targets["agent_mask"] = mask
+        elif key in {"occupancy", "occupancy_flow", "risk", "agent_mask"}:
+            targets[key] = torch.as_tensor(value, dtype=torch.float32)
+    if not targets:
+        raise ValueError("sample labels contain no supported trainable target products")
+    return targets
 
 
 class SequenceWindowDataset:
@@ -195,7 +246,7 @@ class SequenceWindowDataset:
         with Image.open(path) as image:
             image = image.convert("RGB")
             image = image.resize((self.config.image_width, self.config.image_height), resample=Image.Resampling.BILINEAR)
-            raw = torch.ByteTensor(torch.ByteStorage.from_buffer(image.tobytes()))
+            raw = torch.frombuffer(bytearray(image.tobytes()), dtype=torch.uint8)
             tensor = raw.reshape(self.config.image_height, self.config.image_width, 3).permute(2, 0, 1).to(torch.float32) / 255.0
         return tensor
 
@@ -214,8 +265,7 @@ class SequenceWindowDataset:
             ego_history.append([float(sample.ego_state.get(field, 0.0) or 0.0) for field in self.config.ego_fields])
         cameras = torch.stack(camera_history, dim=0)
         ego = torch.tensor(ego_history, dtype=torch.float32)
-        target_labels = history[-1].labels
-        targets = {key: _nested_tensor(value, torch, dtype=torch.float32) for key, value in target_labels.items()}
+        targets = _pack_targets(history[-1].labels, torch)
         return {
             "cameras": cameras,
             "ego_history": ego,
