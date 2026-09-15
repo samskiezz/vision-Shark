@@ -76,7 +76,7 @@ def test_forecaster_produces_multiple_future_modes_for_moving_agent():
 
 def test_counterfactual_evaluator_prefers_clear_trajectory():
     forecaster = MultimodalAgentForecaster()
-    forecasts = {'lead': forecaster.forecast({'x': 12.0, 'y': 0.0, 'vx': 0.0, 'vy': 0.0, 'confidence': 1.0, 'class': 'car'})}
+    forecasts = {'lead': forecaster.forecast({'x': 10.0, 'y': 0.0, 'vx': 0.0, 'vy': 0.0, 'confidence': 1.0, 'class': 'car'})}
     graph = LaneTopologyGraph([
         {'lane_id': 'ego', 'centerline': [{'x': 0, 'y': 0}, {'x': 50, 'y': 0}], 'route_relevance': 1.0},
         {'lane_id': 'left', 'centerline': [{'x': 0, 'y': 4}, {'x': 50, 'y': 4}], 'route_relevance': 0.8},
