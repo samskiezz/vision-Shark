@@ -34,6 +34,8 @@ class TrainingConfig:
             raise ValueError("gradient_clip_norm must be positive")
         if self.seed < 0:
             raise ValueError("seed must be non-negative")
+        if self.mixed_precision and not str(self.device).lower().startswith("cuda"):
+            raise ValueError("mixed_precision currently requires a CUDA device")
 
 
 def _require_torch():
@@ -92,8 +94,12 @@ def train_epoch(
     device: str = "cpu",
     gradient_clip_norm: float = 5.0,
     loss_weights: dict[str, float] | None = None,
+    mixed_precision: bool = False,
+    scaler=None,
 ) -> dict[str, Any]:
     torch = _require_torch()
+    if mixed_precision and not str(device).lower().startswith("cuda"):
+        raise ValueError("mixed_precision requires a CUDA device")
     model.train()
     totals: dict[str, float] = {}
     total_loss = 0.0
@@ -104,11 +110,21 @@ def train_epoch(
         ego_history = _move(ego_history, device)
         targets = _move(targets, device)
         optimizer.zero_grad(set_to_none=True)
-        outputs = model(cameras, ego_history)
-        loss, components = world_model_loss(outputs, targets, weights=loss_weights)
-        loss.backward()
-        grad_norm = float(torch.nn.utils.clip_grad_norm_(model.parameters(), gradient_clip_norm))
-        optimizer.step()
+        with torch.autocast(device_type="cuda", dtype=torch.float16, enabled=mixed_precision):
+            outputs = model(cameras, ego_history)
+            loss, components = world_model_loss(outputs, targets, weights=loss_weights)
+        if mixed_precision:
+            if scaler is None:
+                raise ValueError("mixed_precision requires a gradient scaler")
+            scaler.scale(loss).backward()
+            scaler.unscale_(optimizer)
+            grad_norm = float(torch.nn.utils.clip_grad_norm_(model.parameters(), gradient_clip_norm))
+            scaler.step(optimizer)
+            scaler.update()
+        else:
+            loss.backward()
+            grad_norm = float(torch.nn.utils.clip_grad_norm_(model.parameters(), gradient_clip_norm))
+            optimizer.step()
         total_loss += float(loss.detach().cpu())
         totals["gradient_norm"] = totals.get("gradient_norm", 0.0) + grad_norm
         for name, value in components.items():
@@ -120,6 +136,7 @@ def train_epoch(
         "loss": total_loss / batch_count,
         "batches": batch_count,
         "components": {name: value / batch_count for name, value in totals.items()},
+        "mixed_precision": bool(mixed_precision),
     }
 
 
@@ -129,8 +146,11 @@ def evaluate_epoch(
     *,
     device: str = "cpu",
     loss_weights: dict[str, float] | None = None,
+    mixed_precision: bool = False,
 ) -> dict[str, Any]:
     torch = _require_torch()
+    if mixed_precision and not str(device).lower().startswith("cuda"):
+        raise ValueError("mixed_precision requires a CUDA device")
     model.eval()
     total_loss = 0.0
     totals: dict[str, float] = {}
@@ -141,8 +161,9 @@ def evaluate_epoch(
             cameras = _move(cameras, device)
             ego_history = _move(ego_history, device)
             targets = _move(targets, device)
-            outputs = model(cameras, ego_history)
-            loss, components = world_model_loss(outputs, targets, weights=loss_weights)
+            with torch.autocast(device_type="cuda", dtype=torch.float16, enabled=mixed_precision):
+                outputs = model(cameras, ego_history)
+                loss, components = world_model_loss(outputs, targets, weights=loss_weights)
             total_loss += float(loss.detach().cpu())
             for name, value in components.items():
                 totals[name] = totals.get(name, 0.0) + float(value.detach().cpu())
@@ -153,6 +174,7 @@ def evaluate_epoch(
         "loss": total_loss / batch_count,
         "batches": batch_count,
         "components": {name: value / batch_count for name, value in totals.items()},
+        "mixed_precision": bool(mixed_precision),
     }
 
 
@@ -170,12 +192,15 @@ def fit_world_model(
     cfg.validate()
     set_reproducible_seed(cfg.seed)
     device = torch.device(cfg.device)
+    if device.type == "cuda" and not torch.cuda.is_available():
+        raise ValueError("CUDA device requested but CUDA is not available")
     model.to(device)
     optimizer = torch.optim.AdamW(
         model.parameters(),
         lr=cfg.learning_rate,
         weight_decay=cfg.weight_decay,
     )
+    scaler = torch.amp.GradScaler("cuda", enabled=cfg.mixed_precision) if cfg.mixed_precision else None
     history: list[dict[str, Any]] = []
     best_validation = float("inf")
     best_epoch = 0
@@ -188,12 +213,15 @@ def fit_world_model(
             device=str(device),
             gradient_clip_norm=cfg.gradient_clip_norm,
             loss_weights=loss_weights,
+            mixed_precision=cfg.mixed_precision,
+            scaler=scaler,
         )
         validation_result = evaluate_epoch(
             model,
             validation_batches_factory(),
             device=str(device),
             loss_weights=loss_weights,
+            mixed_precision=cfg.mixed_precision,
         )
         row = {"epoch": epoch, "train": train_result, "validation": validation_result}
         history.append(row)
@@ -273,6 +301,7 @@ def training_profile() -> dict[str, Any]:
         "optimizer": "AdamW",
         "losses": ["occupancy_bce", "flow_smooth_l1", "agent_smooth_l1", "best_mode_trajectory", "trajectory_mode_ce", "risk_bce"],
         "gradient_clipping": True,
+        "mixed_precision_cuda": True,
         "best_validation_checkpoint": True,
         "deterministic_seed_support": True,
         "checkpoint_provenance": ["model_config", "training_config", "dataset_sha256", "metrics", "checkpoint_sha256"],

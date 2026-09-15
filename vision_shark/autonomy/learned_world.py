@@ -204,7 +204,8 @@ def world_model_loss(outputs: dict[str, Any], targets: dict[str, Any], *, weight
             expanded = mask.to(prediction.dtype)
             while expanded.ndim < prediction.ndim:
                 expanded = expanded.unsqueeze(-1)
-            denom = expanded.sum().clamp_min(1.0)
+            coordinate_count = prediction.shape[-1]
+            denom = (expanded.sum() * coordinate_count).clamp_min(1.0)
             losses["agents"] = (functional.smooth_l1_loss(prediction, target, reduction="none") * expanded).sum() / denom
     if targets.get("ego_trajectory") is not None:
         target = targets["ego_trajectory"]
