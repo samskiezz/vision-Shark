@@ -93,7 +93,7 @@ def test_spatial_bev_forward_backward_shapes():
 
 
 def test_spatial_bev_onnx_export_roundtrip(tmp_path):
-    torch = pytest.importorskip("torch")
+    pytest.importorskip("torch")
     pytest.importorskip("onnx")
     from vision_shark.autonomy.learned_world import build_torch_world_model
     from vision_shark.autonomy.world_model_export import export_world_model_onnx, validate_onnx_artifact
