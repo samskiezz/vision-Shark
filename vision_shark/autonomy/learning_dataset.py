@@ -5,9 +5,10 @@ import hashlib
 import json
 import math
 from pathlib import Path
-from typing import Any, Iterable, Sequence
+from typing import Any, Iterable, Mapping, Sequence
 from urllib.parse import unquote, urlparse
 
+from .camera_geometry import CalibrationRig, GEOMETRY_VECTOR_DIM
 from .training_contracts import DatasetManifest, TrainingSample
 
 
@@ -41,6 +42,7 @@ class DatasetLoaderConfig:
     max_agents: int = 32
     ego_fields: tuple[str, ...] = DEFAULT_EGO_FIELDS
     verify_frame_hashes: bool = True
+    require_calibration: bool = False
 
     def validate(self) -> None:
         if self.history_steps <= 0:
@@ -216,9 +218,9 @@ def _pack_targets(labels: dict[str, Any], torch, *, future_steps: int, max_agent
 class SequenceWindowDataset:
     """Load deterministic multi-camera history windows from a DatasetManifest.
 
-    Frame references are resolved only beneath explicitly configured local roots.
-    Split membership applies to the target frame; earlier history remains usable as
-    context so deterministic target splits do not destroy temporal windows.
+    Frame references are local-only. When calibration rigs are supplied, every
+    history frame also emits an ordered camera-geometry tensor using normalized
+    intrinsics and the camera-to-ego extrinsic transform.
     """
 
     def __init__(
@@ -228,6 +230,7 @@ class SequenceWindowDataset:
         frame_roots: Sequence[str | Path],
         sample_ids: Iterable[str] | None = None,
         config: DatasetLoaderConfig | None = None,
+        calibration_rigs: Mapping[str, CalibrationRig] | None = None,
     ) -> None:
         self.manifest = manifest
         self.config = config or DatasetLoaderConfig()
@@ -235,10 +238,17 @@ class SequenceWindowDataset:
         self.frame_roots = tuple(Path(root).expanduser().resolve() for root in frame_roots)
         if not self.frame_roots:
             raise ValueError("at least one frame root is required")
+        self.calibration_rigs = dict(calibration_rigs or {})
+        for calibration_id, rig in self.calibration_rigs.items():
+            rig.validate()
+            if calibration_id != rig.calibration_id:
+                raise ValueError("calibration registry key must match rig calibration_id")
         self.samples = {sample.sample_id: sample for sample in manifest.samples}
         self.camera_ids = tuple(sorted(set(manifest.required_cameras) or {camera.camera_id for sample in manifest.samples for camera in sample.cameras}))
         if not self.camera_ids:
             raise ValueError("dataset has no cameras")
+        if self.config.require_calibration and not self.calibration_rigs:
+            raise ValueError("require_calibration is enabled but no calibration rigs were supplied")
         self.windows = build_sequence_windows(
             manifest,
             history_steps=self.config.history_steps,
@@ -266,11 +276,24 @@ class SequenceWindowDataset:
             tensor = raw.reshape(self.config.image_height, self.config.image_width, 3).permute(2, 0, 1).to(torch.float32) / 255.0
         return tensor
 
+    def _geometry_for_sample(self, sample: TrainingSample, torch):
+        if sample.calibration_id is None:
+            if self.config.require_calibration:
+                raise ValueError(f"sample {sample.sample_id} has no calibration_id")
+            return torch.zeros((len(self.camera_ids), GEOMETRY_VECTOR_DIM), dtype=torch.float32)
+        rig = self.calibration_rigs.get(sample.calibration_id)
+        if rig is None:
+            if self.config.require_calibration:
+                raise ValueError(f"unknown calibration_id for sample {sample.sample_id}: {sample.calibration_id}")
+            return torch.zeros((len(self.camera_ids), GEOMETRY_VECTOR_DIM), dtype=torch.float32)
+        return torch.tensor(rig.ordered_vectors(self.camera_ids), dtype=torch.float32)
+
     def __getitem__(self, index: int) -> dict[str, Any]:
         torch, _ = _require_learning_dependencies()
         window = self.windows[index]
         history = [self.samples[sample_id] for sample_id in window.sample_ids]
         camera_history = []
+        geometry_history = []
         ego_history = []
         for sample in history:
             by_camera = {frame.camera_id: frame for frame in sample.cameras}
@@ -278,8 +301,10 @@ class SequenceWindowDataset:
             if missing:
                 raise ValueError("history window missing cameras: " + ",".join(missing))
             camera_history.append(torch.stack([self._load_frame(by_camera[camera_id]) for camera_id in self.camera_ids], dim=0))
+            geometry_history.append(self._geometry_for_sample(sample, torch))
             ego_history.append([float(sample.ego_state.get(field, 0.0) or 0.0) for field in self.config.ego_fields])
         cameras = torch.stack(camera_history, dim=0)
+        camera_geometry = torch.stack(geometry_history, dim=0)
         ego = torch.tensor(ego_history, dtype=torch.float32)
         targets = _pack_targets(
             history[-1].labels,
@@ -289,6 +314,7 @@ class SequenceWindowDataset:
         )
         return {
             "cameras": cameras,
+            "camera_geometry": camera_geometry,
             "ego_history": ego,
             "targets": targets,
             "sample_id": history[-1].sample_id,
@@ -296,6 +322,7 @@ class SequenceWindowDataset:
             "recording_id": window.recording_id,
             "camera_ids": list(self.camera_ids),
             "timestamps_s": list(window.timestamps_s),
+            "calibration_ids": [sample.calibration_id for sample in history],
         }
 
     def profile(self) -> dict[str, Any]:
@@ -307,6 +334,9 @@ class SequenceWindowDataset:
             "max_agents": self.config.max_agents,
             "camera_ids": list(self.camera_ids),
             "image_shape": [3, self.config.image_height, self.config.image_width],
+            "camera_geometry_shape": [len(self.camera_ids), GEOMETRY_VECTOR_DIM],
+            "calibration_rigs": len(self.calibration_rigs),
+            "require_calibration": self.config.require_calibration,
             "ego_fields": list(self.config.ego_fields),
             "frame_roots": [str(root) for root in self.frame_roots],
             "verify_frame_hashes": self.config.verify_frame_hashes,
