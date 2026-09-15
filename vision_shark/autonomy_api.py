@@ -22,6 +22,8 @@ class PlanningWorldStepBody(BaseModel):
     lane_path: list[dict] = Field(default_factory=list, max_length=1024)
     model_path: list[dict] = Field(default_factory=list, max_length=1024)
     policy_candidates: list[dict] = Field(default_factory=list, max_length=64)
+    model_family: str | None = Field(default=None, max_length=64)
+    model_output: dict | None = None
     cruise_target_ms: float | None = Field(default=None, ge=0.0, le=90.0)
     model_longitudinal: dict | None = None
     world_age_s: float = Field(default=0.0, ge=0.0, le=60.0)
@@ -55,6 +57,21 @@ class PolicyBenchmarkBody(BaseModel):
     selected_candidate_id: str | None = Field(default=None, max_length=128)
 
 
+def _merge_model_output(payload: dict, model_family: str | None, model_output: dict | None, ego_speed_ms: float) -> tuple[dict, dict | None]:
+    if not model_family and not model_output:
+        return payload, None
+    if not model_family or model_output is None:
+        raise ValueError('model_family and model_output must be supplied together')
+    normalized = normalize_model_output(model_family, model_output, ego_speed_ms=ego_speed_ms)
+    merged = dict(payload)
+    merged['policy_candidates'] = list(payload.get('policy_candidates') or []) + list(normalized.get('policy_candidates') or [])
+    if not merged.get('lanes') and normalized.get('lanes'):
+        merged['lanes'] = list(normalized.get('lanes') or [])
+    if not merged.get('camera_detections') and normalized.get('camera_detections'):
+        merged['camera_detections'] = list(normalized.get('camera_detections') or [])
+    return merged, normalized
+
+
 def install_autonomy_routes(app, audit) -> None:
     runtime = PlanningWorldRuntime()
     memory = TemporalSpatialFeatureMemory()
@@ -77,6 +94,11 @@ def install_autonomy_routes(app, audit) -> None:
             'training_manifest': True,
             'policy_benchmark': True,
             'data_uploaded': False,
+        }
+        profile['model_ingest'] = {
+            'supported_families': sorted((adapter_profile().get('supported_model_families') or {}).keys()),
+            'direct_world_step_integration': True,
+            'weights_included': False,
         }
         return profile
 
@@ -145,7 +167,18 @@ def install_autonomy_routes(app, audit) -> None:
     @app.post('/api/vision/autonomy/world-v2/step')
     def planning_world_step(body: PlanningWorldStepBody):
         try:
-            result = runtime.step(body.model_dump())
+            payload = body.model_dump()
+            payload.pop('model_family', None)
+            payload.pop('model_output', None)
+            payload, normalized_model = _merge_model_output(payload, body.model_family, body.model_output, body.ego_speed_ms)
+            result = runtime.step(payload)
+            if normalized_model is not None:
+                result['model_ingest'] = {
+                    'model_family': normalized_model.get('model_family'),
+                    'policy_candidates_added': len(normalized_model.get('policy_candidates') or []),
+                    'model_products': normalized_model.get('model_products') or {},
+                    'adapter_contract': normalized_model.get('adapter_contract'),
+                }
             feature = {
                 'camera_sync': (result.get('camera_sync') or {}).get('reason'),
                 'camera_count': (result.get('camera_sync') or {}).get('camera_count'),
@@ -154,6 +187,7 @@ def install_autonomy_routes(app, audit) -> None:
                 'nearest_lane': ((result.get('lane_topology') or {}).get('nearest_lane') or {}).get('lane_id'),
                 'scenario_tags': (result.get('scenario_mining') or {}).get('tags', []),
                 'selected_candidate': (((result.get('policy') or {}).get('selected') or {}).get('candidate_id')),
+                'model_family': None if normalized_model is None else normalized_model.get('model_family'),
                 'model_latency_ms': body.model_latency_ms,
             }
             result['temporal_feature_memory'] = memory.update(body.timestamp_s, body.ego_distance_m, feature)
@@ -170,6 +204,7 @@ def install_autonomy_routes(app, audit) -> None:
                 'tracks': (result.get('temporal_world') or {}).get('track_count'),
                 'selected_candidate': selected.get('candidate_id'),
                 'scenario_tags': (result.get('scenario_mining') or {}).get('tags', []),
+                'model_family': None if normalized_model is None else normalized_model.get('model_family'),
                 'memory_time_entries': (result.get('temporal_feature_memory') or {}).get('time_queue_entries'),
                 'memory_distance_entries': (result.get('temporal_feature_memory') or {}).get('distance_queue_entries'),
                 'shadow_only': True,
