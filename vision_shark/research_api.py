@@ -8,6 +8,7 @@ from pydantic import BaseModel,Field
 from .adapter_discovery import discover_adapters
 from .agent_policy import evaluate_emergency,evaluate_policy
 from .anomaly import compare_anomaly
+from .autonomy_api import install_autonomy_routes
 from .ecu_fingerprint import ecu_clock_hypotheses
 from .event_diff import event_bit_diff
 from .field_api import install_field_routes
@@ -99,3 +100,4 @@ def install_research_routes(app,runtime,store,audit,orchestrator):
     install_field_routes(app,store,audit)
     install_tuning_routes(app,audit)
     install_shark_oem_routes(app)
+    install_autonomy_routes(app,audit)
