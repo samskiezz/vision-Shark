@@ -37,6 +37,8 @@ class DatasetLoaderConfig:
     image_height: int = 128
     image_width: int = 256
     max_gap_s: float = 0.5
+    future_steps: int = 10
+    max_agents: int = 32
     ego_fields: tuple[str, ...] = DEFAULT_EGO_FIELDS
     verify_frame_hashes: bool = True
 
@@ -49,6 +51,8 @@ class DatasetLoaderConfig:
             raise ValueError("image dimensions must be positive")
         if not math.isfinite(self.max_gap_s) or self.max_gap_s <= 0:
             raise ValueError("max_gap_s must be finite and positive")
+        if self.future_steps <= 0 or self.max_agents <= 0:
+            raise ValueError("future_steps and max_agents must be positive")
         if not self.ego_fields or any(not str(item).strip() for item in self.ego_fields):
             raise ValueError("ego_fields must be non-empty strings")
 
@@ -98,15 +102,14 @@ def build_sequence_windows(
     max_gap_s: float = 0.5,
     sample_ids: Iterable[str] | None = None,
 ) -> list[SequenceWindow]:
+    """Build history windows, using sample_ids as target IDs rather than context IDs."""
     if history_steps <= 0 or stride <= 0:
         raise ValueError("history_steps and stride must be positive")
     if not math.isfinite(max_gap_s) or max_gap_s <= 0:
         raise ValueError("max_gap_s must be finite and positive")
-    allowed = None if sample_ids is None else set(sample_ids)
+    allowed_targets = None if sample_ids is None else set(sample_ids)
     groups: dict[str, list[TrainingSample]] = {}
     for sample in manifest.samples:
-        if allowed is not None and sample.sample_id not in allowed:
-            continue
         groups.setdefault(sample.recording_id, []).append(sample)
     windows: list[SequenceWindow] = []
     for recording_id, samples in sorted(groups.items()):
@@ -114,6 +117,8 @@ def build_sequence_windows(
         for start in range(0, max(0, len(ordered) - history_steps + 1), stride):
             chunk = ordered[start : start + history_steps]
             if len(chunk) != history_steps:
+                continue
+            if allowed_targets is not None and chunk[-1].sample_id not in allowed_targets:
                 continue
             gaps = [right.timestamp_s - left.timestamp_s for left, right in zip(chunk, chunk[1:], strict=False)]
             if any(gap < 0 or gap > max_gap_s for gap in gaps):
@@ -131,7 +136,7 @@ def build_sequence_windows(
     return windows
 
 
-def _points_tensor(value: Any, torch):
+def _points_tensor(value: Any, torch, *, future_steps: int):
     rows = []
     for point in value or []:
         if isinstance(point, dict):
@@ -144,19 +149,22 @@ def _points_tensor(value: Any, torch):
         else:
             row = list(point)
             rows.append([float(row[index]) if index < len(row) else 0.0 for index in range(4)])
-    if not rows:
-        raise ValueError("trajectory label requires at least one point")
+    if len(rows) != future_steps:
+        raise ValueError(f"ego_trajectory requires exactly {future_steps} future points")
     return torch.tensor(rows, dtype=torch.float32)
 
 
-def _agents_tensor(value: Any, torch):
+def _agents_tensor(value: Any, torch, *, future_steps: int, max_agents: int):
     if not value:
         raise ValueError("agent_forecasts label cannot be empty")
+    if len(value) > max_agents:
+        raise ValueError(f"agent_forecasts exceeds max_agents={max_agents}")
     agents = []
     mask = []
-    maximum_steps = max(len(item.get("points", [])) if isinstance(item, dict) else len(item) for item in value)
     for item in value:
         points = item.get("points", []) if isinstance(item, dict) else item
+        if len(points) > future_steps:
+            raise ValueError(f"agent forecast exceeds future_steps={future_steps}")
         rows = []
         active = []
         for point in points:
@@ -171,26 +179,34 @@ def _agents_tensor(value: Any, torch):
                 row = list(point)
                 rows.append([float(row[index]) if index < len(row) else 0.0 for index in range(4)])
             active.append(1.0)
-        while len(rows) < maximum_steps:
+        while len(rows) < future_steps:
             rows.append([0.0, 0.0, 0.0, 0.0])
             active.append(0.0)
         agents.append(rows)
         mask.append(active)
+    while len(agents) < max_agents:
+        agents.append([[0.0, 0.0, 0.0, 0.0] for _ in range(future_steps)])
+        mask.append([0.0 for _ in range(future_steps)])
     return torch.tensor(agents, dtype=torch.float32), torch.tensor(mask, dtype=torch.float32)
 
 
-def _pack_targets(labels: dict[str, Any], torch) -> dict[str, Any]:
+def _pack_targets(labels: dict[str, Any], torch, *, future_steps: int, max_agents: int) -> dict[str, Any]:
     targets: dict[str, Any] = {}
     for key, value in labels.items():
         if value is None:
             continue
         if key == "ego_trajectory":
-            targets[key] = _points_tensor(value, torch)
+            targets[key] = _points_tensor(value, torch, future_steps=future_steps)
         elif key == "agent_forecasts":
-            agents, mask = _agents_tensor(value, torch)
+            agents, mask = _agents_tensor(value, torch, future_steps=future_steps, max_agents=max_agents)
             targets[key] = agents
             targets["agent_mask"] = mask
-        elif key in {"occupancy", "occupancy_flow", "risk", "agent_mask"}:
+        elif key in {"occupancy", "occupancy_flow", "risk"}:
+            tensor = torch.as_tensor(value, dtype=torch.float32)
+            if tensor.shape[0] != future_steps:
+                raise ValueError(f"{key} first dimension must equal future_steps={future_steps}")
+            targets[key] = tensor
+        elif key == "agent_mask" and "agent_mask" not in targets:
             targets[key] = torch.as_tensor(value, dtype=torch.float32)
     if not targets:
         raise ValueError("sample labels contain no supported trainable target products")
@@ -200,9 +216,9 @@ def _pack_targets(labels: dict[str, Any], torch) -> dict[str, Any]:
 class SequenceWindowDataset:
     """Load deterministic multi-camera history windows from a DatasetManifest.
 
-    This dataset is deliberately filesystem-local. Frame references are resolved
-    only beneath explicitly configured roots, so a manifest cannot make training
-    read arbitrary host files or fetch remote URLs.
+    Frame references are resolved only beneath explicitly configured local roots.
+    Split membership applies to the target frame; earlier history remains usable as
+    context so deterministic target splits do not destroy temporal windows.
     """
 
     def __init__(
@@ -265,7 +281,12 @@ class SequenceWindowDataset:
             ego_history.append([float(sample.ego_state.get(field, 0.0) or 0.0) for field in self.config.ego_fields])
         cameras = torch.stack(camera_history, dim=0)
         ego = torch.tensor(ego_history, dtype=torch.float32)
-        targets = _pack_targets(history[-1].labels, torch)
+        targets = _pack_targets(
+            history[-1].labels,
+            torch,
+            future_steps=self.config.future_steps,
+            max_agents=self.config.max_agents,
+        )
         return {
             "cameras": cameras,
             "ego_history": ego,
@@ -282,6 +303,8 @@ class SequenceWindowDataset:
             "samples": len(self.manifest.samples),
             "windows": len(self.windows),
             "history_steps": self.config.history_steps,
+            "future_steps": self.config.future_steps,
+            "max_agents": self.config.max_agents,
             "camera_ids": list(self.camera_ids),
             "image_shape": [3, self.config.image_height, self.config.image_width],
             "ego_fields": list(self.config.ego_fields),
