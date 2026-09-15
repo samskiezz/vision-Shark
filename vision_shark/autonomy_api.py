@@ -3,6 +3,7 @@ from __future__ import annotations
 from fastapi import HTTPException
 from pydantic import BaseModel, Field
 
+from .autonomy.data_engine import FleetDataEngine, benchmark_policy
 from .autonomy.model_adapters import adapter_profile, normalize_model_output
 from .autonomy.planning_world import PlanningWorldRuntime
 from .autonomy.temporal_memory import TemporalSpatialFeatureMemory
@@ -37,11 +38,30 @@ class ModelAdapterBody(BaseModel):
     output: dict
 
 
+class DataEngineScoreBody(BaseModel):
+    scenario: dict
+
+
+class DataEngineSelectBody(BaseModel):
+    scenarios: list[dict] = Field(default_factory=list, max_length=10000)
+    limit: int = Field(default=100, ge=1, le=10000)
+    min_score: float = Field(default=20.0, ge=0.0, le=100.0)
+    max_per_fingerprint: int = Field(default=2, ge=1, le=100)
+
+
+class PolicyBenchmarkBody(BaseModel):
+    candidates: list[dict] = Field(default_factory=list, max_length=128)
+    reference_trajectory: list[dict] = Field(default_factory=list, max_length=2048)
+    selected_candidate_id: str | None = Field(default=None, max_length=128)
+
+
 def install_autonomy_routes(app, audit) -> None:
     runtime = PlanningWorldRuntime()
     memory = TemporalSpatialFeatureMemory()
+    data_engine = FleetDataEngine()
     app.state.planning_world_v2 = runtime
     app.state.temporal_spatial_memory = memory
+    app.state.fleet_data_engine = data_engine
 
     @app.get('/api/vision/autonomy/world-v2/profile')
     def planning_world_profile():
@@ -50,6 +70,13 @@ def install_autonomy_routes(app, audit) -> None:
             'time_interval_s': memory.time_interval_s,
             'distance_interval_m': memory.distance_interval_m,
             'design': 'dual time and distance feature queues',
+        }
+        profile['data_engine'] = {
+            'hard_case_scoring': True,
+            'diversity_deduplication': True,
+            'training_manifest': True,
+            'policy_benchmark': True,
+            'data_uploaded': False,
         }
         return profile
 
@@ -72,6 +99,39 @@ def install_autonomy_routes(app, audit) -> None:
                 'live_actuation': False,
             },
         )
+        return result
+
+    @app.post('/api/vision/autonomy/data-engine/score')
+    def data_engine_score(body: DataEngineScoreBody):
+        result = data_engine.score_scenario(body.scenario)
+        audit.append('autonomy', 'hard_case_scored', {'score': result['score'], 'priority': result['priority'], 'fingerprint': result['fingerprint']})
+        return result
+
+    @app.post('/api/vision/autonomy/data-engine/select')
+    def data_engine_select(body: DataEngineSelectBody):
+        result = data_engine.select(
+            body.scenarios,
+            limit=body.limit,
+            min_score=body.min_score,
+            max_per_fingerprint=body.max_per_fingerprint,
+        )
+        audit.append('autonomy', 'hard_cases_selected', {'input_count': result['input_count'], 'selected_count': result['selected_count']})
+        return result
+
+    @app.post('/api/vision/autonomy/data-engine/training-manifest')
+    def data_engine_manifest(body: DataEngineSelectBody):
+        result = data_engine.training_manifest(body.scenarios, limit=body.limit, min_score=body.min_score)
+        audit.append('autonomy', 'training_manifest_built', {'items': len(result['items']), 'sha256': result['sha256']})
+        return result
+
+    @app.post('/api/vision/autonomy/policy/benchmark')
+    def policy_benchmark(body: PolicyBenchmarkBody):
+        result = benchmark_policy(
+            candidates=body.candidates,
+            reference_trajectory=body.reference_trajectory,
+            selected_candidate_id=body.selected_candidate_id,
+        )
+        audit.append('autonomy', 'policy_benchmarked', {'candidates': len(result['candidates']), 'best_by_ade': result['best_by_ade']})
         return result
 
     @app.post('/api/vision/autonomy/world-v2/reset')
