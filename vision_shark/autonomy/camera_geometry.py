@@ -4,7 +4,7 @@ from dataclasses import asdict, dataclass
 import hashlib
 import json
 import math
-from typing import Any, Iterable
+from typing import Any, Iterable, Mapping
 
 
 GEOMETRY_VECTOR_DIM = 18
@@ -102,15 +102,18 @@ class CalibrationRig:
             raise ValueError("calibration rig missing cameras: " + ",".join(missing))
         return tuple(by_id[camera_id].vector() for camera_id in camera_ids)
 
-    def sha256(self) -> str:
-        payload = {
+    def canonical_dict(self) -> dict[str, Any]:
+        self.validate()
+        return {
             "calibration_id": self.calibration_id,
             "vehicle_variant": self.vehicle_variant,
             "firmware": self.firmware,
             "source": self.source,
             "cameras": [camera.canonical_dict() for camera in sorted(self.cameras, key=lambda item: item.camera_id)],
         }
-        encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str).encode()
+
+    def sha256(self) -> str:
+        encoded = json.dumps(self.canonical_dict(), sort_keys=True, separators=(",", ":"), default=str).encode()
         return hashlib.sha256(encoded).hexdigest()
 
 
@@ -168,13 +171,48 @@ def calibration_registry_from_dict(raw: dict[str, Any]) -> dict[str, Calibration
     return registry
 
 
+def calibration_registry_sha256(registry: Mapping[str, CalibrationRig]) -> str:
+    if not registry:
+        raise ValueError("calibration registry is empty")
+    canonical: dict[str, Any] = {}
+    for calibration_id, rig in sorted(registry.items()):
+        rig.validate()
+        if calibration_id != rig.calibration_id:
+            raise ValueError("calibration registry key must match rig calibration_id")
+        canonical[calibration_id] = rig.canonical_dict()
+    encoded = json.dumps(canonical, sort_keys=True, separators=(",", ":"), default=str).encode()
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def calibration_registry_summary(registry: Mapping[str, CalibrationRig]) -> dict[str, Any]:
+    digest = calibration_registry_sha256(registry)
+    return {
+        "calibration_count": len(registry),
+        "calibration_registry_sha256": digest,
+        "calibrations": [
+            {
+                "calibration_id": calibration_id,
+                "sha256": rig.sha256(),
+                "camera_ids": sorted(rig.camera_map()),
+                "vehicle_variant": rig.vehicle_variant,
+                "firmware": rig.firmware,
+                "source": rig.source,
+            }
+            for calibration_id, rig in sorted(registry.items())
+        ],
+        "geometry_vector_dim": GEOMETRY_VECTOR_DIM,
+        "valid": True,
+    }
+
+
 def calibration_profile() -> dict[str, Any]:
     return {
         "geometry_vector_dim": GEOMETRY_VECTOR_DIM,
         "intrinsic_features": ["fx/width", "fy/height", "cx/width", "cy/height", "width/height", "height/width"],
         "extrinsic_features": "camera_to_ego first 3x4 rows",
         "transform_validation": ["finite", "homogeneous_bottom_row", "rotation_row_norm", "rotation_orthogonality"],
-        "immutable_sha256": True,
+        "immutable_rig_sha256": True,
+        "immutable_registry_sha256": True,
         "live_actuation": False,
         "raw_vehicle_tx": False,
     }
