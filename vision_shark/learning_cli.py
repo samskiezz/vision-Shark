@@ -147,10 +147,16 @@ def _training_objects(args):
     manifest = _manifest(args.manifest)
     split = _splits(manifest, args)
     calibrations = _calibrations(args.calibration_registry)
+    use_spatial_bev = bool(getattr(args, "spatial_bev", False))
     use_geometry = bool(calibrations)
     if getattr(args, "require_calibration", False) and not use_geometry:
         raise ValueError("--require-calibration requires --calibration-registry")
-    loader_cfg = _loader_config(args, geometry_required=use_geometry or getattr(args, "require_calibration", False))
+    if use_spatial_bev and not use_geometry:
+        raise ValueError("--spatial-bev requires --calibration-registry")
+    loader_cfg = _loader_config(
+        args,
+        geometry_required=use_geometry or getattr(args, "require_calibration", False),
+    )
     train_dataset = SequenceWindowDataset(
         manifest,
         frame_roots=args.frame_root,
@@ -179,6 +185,10 @@ def _training_objects(args):
         max_agents=args.max_agents,
         agent_state_dim=4,
         use_camera_geometry=use_geometry,
+        use_spatial_bev=use_spatial_bev,
+        spatial_token_height=args.spatial_token_height,
+        spatial_token_width=args.spatial_token_width,
+        attention_heads=args.attention_heads,
     )
     model = build_torch_world_model(model_cfg)
     generator = torch.Generator().manual_seed(args.seed)
@@ -478,6 +488,10 @@ def build_parser() -> argparse.ArgumentParser:
     train.add_argument("--temporal-layers", type=int, default=1)
     train.add_argument("--bev-height", type=int, default=32)
     train.add_argument("--bev-width", type=int, default=32)
+    train.add_argument("--spatial-bev", action="store_true")
+    train.add_argument("--spatial-token-height", type=int, default=4)
+    train.add_argument("--spatial-token-width", type=int, default=8)
+    train.add_argument("--attention-heads", type=int, default=4)
     train.add_argument("--future-dt-s", type=float, default=0.2)
     train.add_argument("--trajectory-modes", type=int, default=6)
     train.add_argument("--hard-case-limit", type=int, default=100)
