@@ -2,6 +2,9 @@ name: CI
 on: [push, pull_request]
 permissions:
   contents: read
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
   production-gate:
     runs-on: ubuntu-24.04
@@ -53,8 +56,10 @@ jobs:
         with:
           python-version: '3.12'
       - run: python -m pip install --upgrade pip
+      - name: Install CPU PyTorch
+        run: python -m pip install --index-url https://download.pytorch.org/whl/cpu 'torch>=2.4,<3'
       - name: Install learning runtime
-        run: python -m pip install -e '.[dev,learning]'
+        run: python -m pip install -e '.[dev]' 'onnx>=1.16,<2' 'onnxruntime>=1.19,<2' 'pillow>=10,<13'
       - name: Learning dependency resolution check
         run: python -m pip check
       - name: Spatial BEV forward/backward and ONNX smoke
