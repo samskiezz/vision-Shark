@@ -5,6 +5,7 @@ from pathlib import Path
 
 from .adapter_discovery import discover_adapters
 from .autonomy import AutonomyRuntime
+from .autonomy.hybrid import HybridShadowPlanner
 from .doip_transport import DoIPError,DoIPReadOnlyClient,parse_uds_response
 from .fingerprint import fingerprint_frames
 from .knowledge import KnowledgeGraph
@@ -19,7 +20,7 @@ class VisionOrchestrator:
         if knowledge_path is None and getattr(runtime,'storage',None) is not None:
             base=getattr(runtime.storage,'path',None)
             if base is not None:knowledge_path=Path(base).parent/'vehicle-knowledge.json'
-        self.knowledge=KnowledgeGraph(knowledge_path);self.autonomy=AutonomyRuntime();self._lock=asyncio.Lock();self.diagnostic_endpoint=None;self.diagnostic_proof=None
+        self.knowledge=KnowledgeGraph(knowledge_path);self.autonomy=AutonomyRuntime();self.hybrid_autonomy=HybridShadowPlanner();self._lock=asyncio.Lock();self.diagnostic_endpoint=None;self.diagnostic_proof=None
 
     def _audit(self,event,payload=None):
         if self.audit:self.audit.append('vision',event,payload or {})
@@ -106,5 +107,9 @@ class VisionOrchestrator:
             self.session.state=WorkflowState.LEARNING;report=self.learning.analyze(list(self.runtime.recent));self.session.step('passive_learning',frames=report['frame_count'],messages=len(report['message_inventory']),hypotheses=len(report['signal_hypotheses']));self.knowledge.put('learning.latest',report,.5,'passive-learning');self.session.state=WorkflowState.READY;self._audit('passive_learning',{'frames':report['frame_count'],'messages':len(report['message_inventory']),'hypotheses':len(report['signal_hypotheses'])});return {'session':self.session.snapshot(),'report':report,'knowledge_digest':self.knowledge.digest()}
 
     def shadow_autonomy(self,payload):return self.autonomy.run(**payload)
+    def hybrid_shadow_autonomy(self,payload):
+        result=self.hybrid_autonomy.run(**payload)
+        self._audit('hybrid_shadow_autonomy',{'selected':result['selected']['generator'],'risk':result['risk']['risk'],'odd_inside':result['odd']['inside']})
+        return result
     def status(self):
         out=self.session.snapshot();out['runtime']=self.runtime.status();out['diagnostic_endpoint']=self.diagnostic_endpoint;out['diagnostic_proof']=self.diagnostic_proof;out['knowledge_digest']=self.knowledge.digest();out['knowledge_facts']=len(self.knowledge.snapshot());return out
