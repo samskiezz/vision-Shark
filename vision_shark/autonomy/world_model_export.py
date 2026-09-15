@@ -49,14 +49,24 @@ def export_world_model_onnx(
     target.parent.mkdir(parents=True, exist_ok=True)
     model = model.to(device).eval()
 
-    class ExportWrapper(nn.Module):
-        def __init__(self, inner) -> None:
-            super().__init__()
-            self.inner = inner
+    if config.use_camera_geometry:
+        class ExportWrapper(nn.Module):
+            def __init__(self, inner) -> None:
+                super().__init__()
+                self.inner = inner
 
-        def forward(self, cameras, ego_history):
-            outputs = self.inner(cameras, ego_history)
-            return tuple(outputs[name] for name in OUTPUT_NAMES)
+            def forward(self, cameras, ego_history, camera_geometry):
+                outputs = self.inner(cameras, ego_history, camera_geometry)
+                return tuple(outputs[name] for name in OUTPUT_NAMES)
+    else:
+        class ExportWrapper(nn.Module):
+            def __init__(self, inner) -> None:
+                super().__init__()
+                self.inner = inner
+
+            def forward(self, cameras, ego_history):
+                outputs = self.inner(cameras, ego_history)
+                return tuple(outputs[name] for name in OUTPUT_NAMES)
 
     wrapper = ExportWrapper(model)
     cameras = torch.zeros(
@@ -70,17 +80,31 @@ def export_world_model_onnx(
         device=device,
     )
     ego = torch.zeros(1, history_steps, config.ego_state_dim, dtype=torch.float32, device=device)
+    input_names = ["cameras", "ego_history"]
+    export_args: tuple[Any, ...] = (cameras, ego)
     dynamic_axes = {
         "cameras": {0: "batch", 1: "history"},
         "ego_history": {0: "batch", 1: "history"},
     }
+    if config.use_camera_geometry:
+        geometry = torch.zeros(
+            1,
+            history_steps,
+            config.camera_count,
+            config.camera_geometry_dim,
+            dtype=torch.float32,
+            device=device,
+        )
+        export_args = (cameras, ego, geometry)
+        input_names.append("camera_geometry")
+        dynamic_axes["camera_geometry"] = {0: "batch", 1: "history"}
     for name in OUTPUT_NAMES:
         dynamic_axes[name] = {0: "batch"}
     torch.onnx.export(
         wrapper,
-        (cameras, ego),
+        export_args,
         target,
-        input_names=["cameras", "ego_history"],
+        input_names=input_names,
         output_names=list(OUTPUT_NAMES),
         dynamic_axes=dynamic_axes,
         opset_version=int(opset_version),
@@ -94,8 +118,9 @@ def export_world_model_onnx(
         "opset_version": int(opset_version),
         "history_steps_example": int(history_steps),
         "image_shape_example": [int(image_height), int(image_width)],
-        "inputs": ["cameras", "ego_history"],
+        "inputs": input_names,
         "outputs": list(OUTPUT_NAMES),
+        "geometry_aware": bool(config.use_camera_geometry),
         "config": config.as_dict(),
         "live_actuation": False,
         "raw_vehicle_tx": False,
@@ -119,7 +144,19 @@ def validate_onnx_artifact(path: str | Path) -> dict[str, Any]:
     onnx.checker.check_model(model)
     graph_inputs = [item.name for item in model.graph.input]
     graph_outputs = [item.name for item in model.graph.output]
-    missing_inputs = sorted({"cameras", "ego_history"} - set(graph_inputs))
+    expected_inputs = {"cameras", "ego_history"}
+    sidecar = target.with_suffix(target.suffix + ".json")
+    geometry_aware = "camera_geometry" in graph_inputs
+    if sidecar.is_file():
+        try:
+            metadata = json.loads(sidecar.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ValueError("invalid ONNX metadata sidecar") from exc
+        if isinstance(metadata, dict):
+            geometry_aware = bool((metadata.get("config") or {}).get("use_camera_geometry", metadata.get("geometry_aware", geometry_aware)))
+    if geometry_aware:
+        expected_inputs.add("camera_geometry")
+    missing_inputs = sorted(expected_inputs - set(graph_inputs))
     missing_outputs = sorted(set(OUTPUT_NAMES) - set(graph_outputs))
     if missing_inputs or missing_outputs:
         raise ValueError(f"ONNX interface mismatch: missing_inputs={missing_inputs}, missing_outputs={missing_outputs}")
@@ -128,6 +165,7 @@ def validate_onnx_artifact(path: str | Path) -> dict[str, Any]:
         "sha256": hashlib.sha256(target.read_bytes()).hexdigest(),
         "inputs": graph_inputs,
         "outputs": graph_outputs,
+        "geometry_aware": geometry_aware,
         "live_actuation": False,
         "raw_vehicle_tx": False,
     }
@@ -136,7 +174,8 @@ def validate_onnx_artifact(path: str | Path) -> dict[str, Any]:
 def export_profile() -> dict[str, Any]:
     return {
         "format": "ONNX",
-        "inputs": ["cameras", "ego_history"],
+        "required_inputs": ["cameras", "ego_history"],
+        "geometry_aware_input": "camera_geometry",
         "outputs": list(OUTPUT_NAMES),
         "dynamic_batch": True,
         "dynamic_history": True,

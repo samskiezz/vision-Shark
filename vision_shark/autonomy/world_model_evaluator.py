@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Iterable
 
+from .training import forward_world_model
 from .world_model_metrics import aggregate_metric_reports, evaluate_world_model_products
 
 
@@ -62,13 +63,15 @@ def evaluate_model_batches(model, batches: Iterable[dict[str, Any]], *, device: 
         for batch in batches:
             cameras = _move(batch.get("cameras"), device)
             ego = _move(batch.get("ego_history"), device)
+            camera_geometry = _move(batch.get("camera_geometry"), device)
             targets = _move(dict(batch.get("targets") or {}), device)
             if cameras is None or ego is None:
                 raise ValueError("batch requires cameras and ego_history")
-            outputs = model(cameras, ego)
+            outputs = forward_world_model(model, cameras, ego, camera_geometry)
             probabilities = torch.softmax(outputs["trajectory_logits"], dim=-1)
             count = _batch_size(batch)
             sample_ids = batch.get("sample_id") or [str(index) for index in range(count)]
+            calibration_ids = batch.get("calibration_ids")
             for index in range(count):
                 prediction = {
                     "occupancy_logits": _cpu_list(outputs.get("occupancy_logits")[index]) if outputs.get("occupancy_logits") is not None else None,
@@ -87,12 +90,16 @@ def evaluate_model_batches(model, batches: Iterable[dict[str, Any]], *, device: 
                 report = evaluate_world_model_products(prediction, target)
                 reports.append(report)
                 sample_id = sample_ids[index] if isinstance(sample_ids, (list, tuple)) else _at(sample_ids, index)
-                per_sample.append({"sample_id": str(sample_id), "metrics": report})
+                row = {"sample_id": str(sample_id), "metrics": report}
+                if calibration_ids is not None:
+                    row["calibration_ids"] = _cpu_list(_at(calibration_ids, index))
+                per_sample.append(row)
     aggregate = aggregate_metric_reports(reports)
     return {
         "aggregate": aggregate,
         "samples": per_sample,
         "evaluated_samples": len(per_sample),
+        "geometry_aware": bool(getattr(getattr(model, "config", None), "use_camera_geometry", False)),
         "offline_evaluation": True,
         "live_actuation": False,
         "raw_vehicle_tx": False,
@@ -128,6 +135,12 @@ def rank_hard_cases(evaluation: dict[str, Any], *, limit: int = 100) -> list[dic
         if flow_epe > 0.5:
             score += min(10.0, flow_epe * 2.0)
             reasons.append("flow_error")
-        ranked.append({"sample_id": row.get("sample_id"), "score": min(100.0, score), "reasons": reasons, "metrics": metrics})
+        ranked.append({
+            "sample_id": row.get("sample_id"),
+            "calibration_ids": row.get("calibration_ids"),
+            "score": min(100.0, score),
+            "reasons": reasons,
+            "metrics": metrics,
+        })
     ranked.sort(key=lambda item: (item["score"], str(item.get("sample_id"))), reverse=True)
     return ranked[:limit]

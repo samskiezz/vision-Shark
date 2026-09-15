@@ -4,6 +4,8 @@ from dataclasses import asdict, dataclass
 import math
 from typing import Any
 
+from .camera_geometry import GEOMETRY_VECTOR_DIM
+
 
 @dataclass(frozen=True)
 class WorldModelConfig:
@@ -19,6 +21,8 @@ class WorldModelConfig:
     trajectory_modes: int = 6
     max_agents: int = 32
     agent_state_dim: int = 4
+    camera_geometry_dim: int = GEOMETRY_VECTOR_DIM
+    use_camera_geometry: bool = False
 
     def validate(self) -> None:
         integer_fields = {
@@ -33,6 +37,7 @@ class WorldModelConfig:
             "trajectory_modes": self.trajectory_modes,
             "max_agents": self.max_agents,
             "agent_state_dim": self.agent_state_dim,
+            "camera_geometry_dim": self.camera_geometry_dim,
         }
         if any(value <= 0 for value in integer_fields.values()):
             raise ValueError("world-model dimensions must be positive")
@@ -57,13 +62,13 @@ def _require_torch():
 
 
 def build_torch_world_model(config: WorldModelConfig | None = None):
-    """Build a compact trainable multi-camera temporal world model.
+    """Build a trainable multi-camera temporal world model.
 
-    Input camera tensor shape is [batch, time, cameras, channels, height, width].
-    Ego history shape is [batch, time, ego_state_dim]. The model shares one image
-    encoder across every camera, fuses cameras in feature space, carries temporal
-    state through a GRU, and emits occupancy, flow, agent futures and multimodal
-    ego trajectories for offline/shadow evaluation.
+    Camera images are encoded by a shared CNN. When `use_camera_geometry` is
+    enabled, validated normalized intrinsics and camera-to-ego extrinsics are
+    embedded and fused into each camera token before cross-camera attention.
+    Ego history and fused visual history then pass through a temporal GRU and
+    multi-task world/policy heads for offline or shadow evaluation.
     """
     cfg = config or WorldModelConfig()
     cfg.validate()
@@ -83,6 +88,13 @@ def build_torch_world_model(config: WorldModelConfig | None = None):
                 nn.AdaptiveAvgPool2d((1, 1)),
             )
             self.camera_embedding = nn.Embedding(cfg.camera_count, cfg.hidden_dim)
+            self.geometry_encoder = None
+            if cfg.use_camera_geometry:
+                self.geometry_encoder = nn.Sequential(
+                    nn.Linear(cfg.camera_geometry_dim, cfg.hidden_dim),
+                    nn.SiLU(),
+                    nn.Linear(cfg.hidden_dim, cfg.hidden_dim),
+                )
             self.camera_attention = nn.Sequential(
                 nn.Linear(cfg.hidden_dim, cfg.hidden_dim),
                 nn.SiLU(),
@@ -117,7 +129,7 @@ def build_torch_world_model(config: WorldModelConfig | None = None):
         def config(self) -> WorldModelConfig:
             return cfg
 
-        def encode_cameras(self, cameras):
+        def encode_cameras(self, cameras, camera_geometry=None):
             if cameras.ndim != 6:
                 raise ValueError("cameras must have shape [B,T,C,Channels,H,W]")
             batch, time_steps, camera_count, channels, height, width = cameras.shape
@@ -130,14 +142,25 @@ def build_torch_world_model(config: WorldModelConfig | None = None):
             encoded = encoded.reshape(batch, time_steps, camera_count, cfg.hidden_dim)
             camera_ids = torch.arange(camera_count, device=cameras.device)
             encoded = encoded + self.camera_embedding(camera_ids).view(1, 1, camera_count, cfg.hidden_dim)
+            if cfg.use_camera_geometry:
+                if camera_geometry is None:
+                    raise ValueError("camera_geometry is required when use_camera_geometry is enabled")
+                expected_shape = (batch, time_steps, camera_count, cfg.camera_geometry_dim)
+                if tuple(camera_geometry.shape) != expected_shape:
+                    raise ValueError(
+                        "camera_geometry must have shape "
+                        f"[B,T,C,{cfg.camera_geometry_dim}], received {tuple(camera_geometry.shape)}"
+                    )
+                geometry = camera_geometry.to(device=cameras.device, dtype=encoded.dtype)
+                encoded = encoded + self.geometry_encoder(geometry)
             weights = torch.softmax(self.camera_attention(encoded).squeeze(-1), dim=2)
             fused = (encoded * weights.unsqueeze(-1)).sum(dim=2)
             return fused, weights
 
-        def forward(self, cameras, ego_history):
+        def forward(self, cameras, ego_history, camera_geometry=None):
             if ego_history.ndim != 3:
                 raise ValueError("ego_history must have shape [B,T,E]")
-            camera_features, camera_weights = self.encode_cameras(cameras)
+            camera_features, camera_weights = self.encode_cameras(cameras, camera_geometry)
             if ego_history.shape[:2] != camera_features.shape[:2]:
                 raise ValueError("camera and ego history batch/time dimensions must match")
             if ego_history.shape[-1] != cfg.ego_state_dim:
@@ -230,14 +253,22 @@ def world_model_loss(outputs: dict[str, Any], targets: dict[str, Any], *, weight
 def world_model_profile(config: WorldModelConfig | None = None) -> dict[str, Any]:
     cfg = config or WorldModelConfig()
     cfg.validate()
+    inputs = {
+        "cameras": "[batch,time,cameras,channels,height,width]",
+        "ego_history": "[batch,time,ego_state_dim]",
+    }
+    if cfg.use_camera_geometry:
+        inputs["camera_geometry"] = f"[batch,time,cameras,{cfg.camera_geometry_dim}]"
     return {
         "model_family": "vision_world_model",
-        "architecture": "shared multi-camera CNN + learned camera attention + temporal GRU + multi-task heads",
+        "architecture": (
+            "shared multi-camera CNN + calibrated geometry embeddings + learned camera attention + temporal GRU + multi-task heads"
+            if cfg.use_camera_geometry
+            else "shared multi-camera CNN + learned camera attention + temporal GRU + multi-task heads"
+        ),
         "config": cfg.as_dict(),
-        "input_contract": {
-            "cameras": "[batch,time,cameras,channels,height,width]",
-            "ego_history": "[batch,time,ego_state_dim]",
-        },
+        "input_contract": inputs,
+        "geometry_aware": bool(cfg.use_camera_geometry),
         "output_products": [
             "occupancy_logits",
             "occupancy_flow",

@@ -71,19 +71,43 @@ def _move(value: Any, device: str):
     return value
 
 
-def _batch_parts(batch: Any) -> tuple[Any, Any, dict[str, Any]]:
+def _batch_parts(batch: Any) -> tuple[Any, Any, Any | None, dict[str, Any]]:
     if isinstance(batch, dict):
         cameras = batch.get("cameras")
         ego_history = batch.get("ego_history")
+        camera_geometry = batch.get("camera_geometry")
         targets = dict(batch.get("targets") or {})
     elif isinstance(batch, (tuple, list)) and len(batch) == 3:
         cameras, ego_history, targets = batch
+        camera_geometry = None
+        targets = dict(targets)
+    elif isinstance(batch, (tuple, list)) and len(batch) == 4:
+        cameras, ego_history, camera_geometry, targets = batch
         targets = dict(targets)
     else:
-        raise ValueError("batch must be a mapping or (cameras, ego_history, targets) tuple")
+        raise ValueError(
+            "batch must be a mapping, (cameras, ego_history, targets), or "
+            "(cameras, ego_history, camera_geometry, targets) tuple"
+        )
     if cameras is None or ego_history is None:
         raise ValueError("batch requires cameras and ego_history")
-    return cameras, ego_history, targets
+    return cameras, ego_history, camera_geometry, targets
+
+
+def forward_world_model(model, cameras, ego_history, camera_geometry=None):
+    """Call a Vision world model while preserving the legacy two-input contract.
+
+    Geometry-aware checkpoints declare `config.use_camera_geometry=True`. Those
+    models must receive the calibrated per-camera tensor; legacy checkpoints keep
+    the original `(cameras, ego_history)` forward signature semantics.
+    """
+    config = getattr(model, "config", None)
+    use_geometry = bool(getattr(config, "use_camera_geometry", False))
+    if use_geometry:
+        if camera_geometry is None:
+            raise ValueError("geometry-aware world model requires camera_geometry")
+        return model(cameras, ego_history, camera_geometry)
+    return model(cameras, ego_history)
 
 
 def train_epoch(
@@ -105,13 +129,14 @@ def train_epoch(
     total_loss = 0.0
     batch_count = 0
     for raw_batch in batches:
-        cameras, ego_history, targets = _batch_parts(raw_batch)
+        cameras, ego_history, camera_geometry, targets = _batch_parts(raw_batch)
         cameras = _move(cameras, device)
         ego_history = _move(ego_history, device)
+        camera_geometry = _move(camera_geometry, device)
         targets = _move(targets, device)
         optimizer.zero_grad(set_to_none=True)
         with torch.autocast(device_type="cuda", dtype=torch.float16, enabled=mixed_precision):
-            outputs = model(cameras, ego_history)
+            outputs = forward_world_model(model, cameras, ego_history, camera_geometry)
             loss, components = world_model_loss(outputs, targets, weights=loss_weights)
         if mixed_precision:
             if scaler is None:
@@ -157,12 +182,13 @@ def evaluate_epoch(
     batch_count = 0
     with torch.no_grad():
         for raw_batch in batches:
-            cameras, ego_history, targets = _batch_parts(raw_batch)
+            cameras, ego_history, camera_geometry, targets = _batch_parts(raw_batch)
             cameras = _move(cameras, device)
             ego_history = _move(ego_history, device)
+            camera_geometry = _move(camera_geometry, device)
             targets = _move(targets, device)
             with torch.autocast(device_type="cuda", dtype=torch.float16, enabled=mixed_precision):
-                outputs = model(cameras, ego_history)
+                outputs = forward_world_model(model, cameras, ego_history, camera_geometry)
                 loss, components = world_model_loss(outputs, targets, weights=loss_weights)
             total_loss += float(loss.detach().cpu())
             for name, value in components.items():
@@ -239,6 +265,7 @@ def fit_world_model(
         "best_validation_loss": best_validation,
         "history": history,
         "training_config": asdict(cfg),
+        "geometry_aware": bool(getattr(getattr(model, "config", None), "use_camera_geometry", False)),
         "live_actuation": False,
         "raw_vehicle_tx": False,
     }
@@ -304,6 +331,7 @@ def training_profile() -> dict[str, Any]:
         "mixed_precision_cuda": True,
         "best_validation_checkpoint": True,
         "deterministic_seed_support": True,
+        "camera_geometry_routing": True,
         "checkpoint_provenance": ["model_config", "training_config", "dataset_sha256", "metrics", "checkpoint_sha256"],
         "offline_training": True,
         "live_actuation": False,

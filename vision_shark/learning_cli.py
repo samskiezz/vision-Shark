@@ -27,6 +27,14 @@ def _manifest(path: str):
     return dataset_manifest_from_dict(_json_file(path))
 
 
+def _calibrations(path: str | None):
+    if not path:
+        return {}
+    from .autonomy.camera_geometry import calibration_registry_from_dict
+
+    return calibration_registry_from_dict(_json_file(path, max_bytes=16 * 1024 * 1024))
+
+
 def _splits(manifest, args):
     return manifest.split(
         train=args.train_fraction,
@@ -36,9 +44,11 @@ def _splits(manifest, args):
     )
 
 
-def _loader_config(args):
+def _loader_config(args, *, geometry_required: bool | None = None):
     from .autonomy.learning_dataset import DatasetLoaderConfig
 
+    if geometry_required is None:
+        geometry_required = bool(getattr(args, "require_calibration", False))
     return DatasetLoaderConfig(
         history_steps=args.history_steps,
         stride=args.stride,
@@ -48,10 +58,12 @@ def _loader_config(args):
         future_steps=args.future_steps,
         max_agents=args.max_agents,
         verify_frame_hashes=not args.no_verify_frame_hashes,
+        require_calibration=bool(geometry_required),
     )
 
 
 def _profile(_args) -> int:
+    from .autonomy.camera_geometry import calibration_profile
     from .autonomy.learned_world import world_model_profile
     from .autonomy.learning_provenance import provenance_profile
     from .autonomy.training import training_profile
@@ -60,6 +72,7 @@ def _profile(_args) -> int:
 
     print(json.dumps({
         "data_contract": training_contract_profile(),
+        "camera_calibration": calibration_profile(),
         "model": world_model_profile(),
         "training": training_profile(),
         "provenance": provenance_profile(),
@@ -86,21 +99,33 @@ def _manifest_validate(args) -> int:
     return 0
 
 
+def _calibration_validate(args) -> int:
+    from .autonomy.camera_geometry import calibration_registry_summary
+
+    registry = _calibrations(args.calibration_registry)
+    print(json.dumps(calibration_registry_summary(registry), indent=2))
+    return 0
+
+
 def _dataset_inspect(args) -> int:
+    from .autonomy.camera_geometry import calibration_registry_sha256
     from .autonomy.learning_dataset import SequenceWindowDataset
 
     manifest = _manifest(args.manifest)
     split = _splits(manifest, args)
     selected = None if args.split == "all" else split[args.split]
+    calibrations = _calibrations(args.calibration_registry)
     dataset = SequenceWindowDataset(
         manifest,
         frame_roots=args.frame_root,
         sample_ids=selected,
         config=_loader_config(args),
+        calibration_rigs=calibrations,
     )
     profile = dataset.profile()
     profile["split"] = args.split
     profile["manifest_sha256"] = manifest.sha256()
+    profile["calibration_registry_sha256"] = calibration_registry_sha256(calibrations) if calibrations else None
     print(json.dumps(profile, indent=2))
     return 0
 
@@ -115,14 +140,31 @@ def _require_torch():
 
 def _training_objects(args):
     torch = _require_torch()
+    from .autonomy.camera_geometry import calibration_registry_sha256
     from .autonomy.learned_world import WorldModelConfig, build_torch_world_model
     from .autonomy.learning_dataset import SequenceWindowDataset
 
     manifest = _manifest(args.manifest)
     split = _splits(manifest, args)
-    loader_cfg = _loader_config(args)
-    train_dataset = SequenceWindowDataset(manifest, frame_roots=args.frame_root, sample_ids=split["train"], config=loader_cfg)
-    validation_dataset = SequenceWindowDataset(manifest, frame_roots=args.frame_root, sample_ids=split["validation"], config=loader_cfg)
+    calibrations = _calibrations(args.calibration_registry)
+    use_geometry = bool(calibrations)
+    if getattr(args, "require_calibration", False) and not use_geometry:
+        raise ValueError("--require-calibration requires --calibration-registry")
+    loader_cfg = _loader_config(args, geometry_required=use_geometry or getattr(args, "require_calibration", False))
+    train_dataset = SequenceWindowDataset(
+        manifest,
+        frame_roots=args.frame_root,
+        sample_ids=split["train"],
+        config=loader_cfg,
+        calibration_rigs=calibrations,
+    )
+    validation_dataset = SequenceWindowDataset(
+        manifest,
+        frame_roots=args.frame_root,
+        sample_ids=split["validation"],
+        config=loader_cfg,
+        calibration_rigs=calibrations,
+    )
     model_cfg = WorldModelConfig(
         camera_count=len(train_dataset.camera_ids),
         image_channels=3,
@@ -136,6 +178,7 @@ def _training_objects(args):
         trajectory_modes=args.trajectory_modes,
         max_agents=args.max_agents,
         agent_state_dim=4,
+        use_camera_geometry=use_geometry,
     )
     model = build_torch_world_model(model_cfg)
     generator = torch.Generator().manual_seed(args.seed)
@@ -152,7 +195,18 @@ def _training_objects(args):
         shuffle=False,
         num_workers=args.workers,
     )
-    return manifest, split, loader_cfg, model_cfg, model, train_loader, validation_loader
+    calibration_sha256 = calibration_registry_sha256(calibrations) if calibrations else None
+    return (
+        manifest,
+        split,
+        loader_cfg,
+        model_cfg,
+        model,
+        train_loader,
+        validation_loader,
+        calibrations,
+        calibration_sha256,
+    )
 
 
 def _train(args) -> int:
@@ -160,7 +214,17 @@ def _train(args) -> int:
     from .autonomy.world_model_evaluator import evaluate_model_batches, rank_hard_cases
     from .autonomy.world_model_export import export_world_model_onnx, validate_onnx_artifact
 
-    manifest, split, loader_cfg, model_cfg, model, train_loader, validation_loader = _training_objects(args)
+    (
+        manifest,
+        split,
+        loader_cfg,
+        model_cfg,
+        model,
+        train_loader,
+        validation_loader,
+        calibrations,
+        calibration_sha256,
+    ) = _training_objects(args)
     training_cfg = TrainingConfig(
         epochs=args.epochs,
         learning_rate=args.learning_rate,
@@ -168,6 +232,7 @@ def _train(args) -> int:
         gradient_clip_norm=args.gradient_clip_norm,
         seed=args.seed,
         device=args.device,
+        mixed_precision=args.mixed_precision,
     )
     result = fit_world_model(
         model,
@@ -197,7 +262,10 @@ def _train(args) -> int:
                 "future_steps": loader_cfg.future_steps,
                 "max_agents": loader_cfg.max_agents,
                 "ego_fields": list(loader_cfg.ego_fields),
+                "require_calibration": loader_cfg.require_calibration,
             },
+            "calibration_registry_sha256": calibration_sha256,
+            "calibration_ids": sorted(calibrations),
             "validation_hard_cases": hard_cases,
         },
     )
@@ -237,7 +305,11 @@ def _train(args) -> int:
             checkpoint_path=args.output,
             dataset_names=[dataset_name],
             evaluation=evaluation["aggregate"],
-            metadata={"world_model_config": model_cfg.as_dict()},
+            calibration_sha256=calibration_sha256,
+            metadata={
+                "world_model_config": model_cfg.as_dict(),
+                "calibration_ids": sorted(calibrations),
+            },
         )
     print(json.dumps({
         "fit": result,
@@ -246,6 +318,7 @@ def _train(args) -> int:
         "checkpoint": checkpoint,
         "onnx": export,
         "registry": registry,
+        "calibration_registry_sha256": calibration_sha256,
     }, indent=2))
     return 0
 
@@ -260,6 +333,7 @@ def _read_checkpoint_sidecar(checkpoint: str | Path) -> dict:
 
 def _evaluate(args) -> int:
     torch = _require_torch()
+    from .autonomy.camera_geometry import calibration_registry_sha256
     from .autonomy.learned_world import WorldModelConfig, build_torch_world_model
     from .autonomy.learning_dataset import DatasetLoaderConfig, SequenceWindowDataset
     from .autonomy.training import load_checkpoint
@@ -269,6 +343,13 @@ def _evaluate(args) -> int:
     model_cfg = WorldModelConfig(**dict(metadata.get("model_config") or {}))
     model_cfg.validate()
     loader_meta = dict((metadata.get("extra") or {}).get("loader_config") or {})
+    expected_calibration_sha256 = (metadata.get("extra") or {}).get("calibration_registry_sha256")
+    calibrations = _calibrations(args.calibration_registry)
+    calibration_sha256 = calibration_registry_sha256(calibrations) if calibrations else None
+    if model_cfg.use_camera_geometry and not calibrations:
+        raise ValueError("geometry-aware checkpoint requires --calibration-registry")
+    if expected_calibration_sha256 and calibration_sha256 != expected_calibration_sha256:
+        raise ValueError("calibration registry SHA-256 does not match checkpoint provenance")
     manifest = _manifest(args.manifest)
     split = _splits(manifest, args)
     loader_cfg = DatasetLoaderConfig(
@@ -281,9 +362,16 @@ def _evaluate(args) -> int:
         max_agents=model_cfg.max_agents,
         ego_fields=tuple(loader_meta.get("ego_fields") or ()) or DatasetLoaderConfig().ego_fields,
         verify_frame_hashes=not args.no_verify_frame_hashes,
+        require_calibration=bool(model_cfg.use_camera_geometry),
     )
     selected = split[args.split]
-    dataset = SequenceWindowDataset(manifest, frame_roots=args.frame_root, sample_ids=selected, config=loader_cfg)
+    dataset = SequenceWindowDataset(
+        manifest,
+        frame_roots=args.frame_root,
+        sample_ids=selected,
+        config=loader_cfg,
+        calibration_rigs=calibrations,
+    )
     loader = torch.utils.data.DataLoader(dataset, batch_size=args.batch_size, shuffle=False, num_workers=args.workers)
     model = build_torch_world_model(model_cfg)
     load_checkpoint(model, args.checkpoint, device=args.device)
@@ -291,6 +379,7 @@ def _evaluate(args) -> int:
     evaluation["hard_cases"] = rank_hard_cases(evaluation, limit=args.hard_case_limit)
     evaluation["split"] = args.split
     evaluation["checkpoint"] = str(args.checkpoint)
+    evaluation["calibration_registry_sha256"] = calibration_sha256
     print(json.dumps(evaluation, indent=2))
     return 0
 
@@ -345,6 +434,8 @@ def _add_loader_arguments(parser):
     parser.add_argument("--future-steps", type=int, default=10)
     parser.add_argument("--max-agents", type=int, default=32)
     parser.add_argument("--no-verify-frame-hashes", action="store_true")
+    parser.add_argument("--calibration-registry")
+    parser.add_argument("--require-calibration", action="store_true")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -358,6 +449,10 @@ def build_parser() -> argparse.ArgumentParser:
     manifest.add_argument("--manifest", required=True)
     _add_split_arguments(manifest)
     manifest.set_defaults(func=_manifest_validate)
+
+    calibration = sub.add_parser("calibration-validate")
+    calibration.add_argument("--calibration-registry", required=True)
+    calibration.set_defaults(func=_calibration_validate)
 
     inspect = sub.add_parser("dataset-inspect")
     inspect.add_argument("--manifest", required=True)
@@ -376,6 +471,7 @@ def build_parser() -> argparse.ArgumentParser:
     train.add_argument("--gradient-clip-norm", type=float, default=5.0)
     train.add_argument("--seed", type=int, default=1337)
     train.add_argument("--device", default="cpu")
+    train.add_argument("--mixed-precision", action="store_true")
     train.add_argument("--batch-size", type=int, default=1)
     train.add_argument("--workers", type=int, default=0)
     train.add_argument("--hidden-dim", type=int, default=128)

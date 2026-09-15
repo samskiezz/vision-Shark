@@ -3,6 +3,11 @@ from __future__ import annotations
 from fastapi import HTTPException
 from pydantic import BaseModel, Field
 
+from .autonomy.camera_geometry import (
+    calibration_profile,
+    calibration_registry_from_dict,
+    calibration_registry_summary,
+)
 from .autonomy.learned_world import WorldModelConfig, world_model_profile
 from .autonomy.training import training_profile
 from .autonomy.training_contracts import dataset_manifest_from_dict, training_contract_profile
@@ -16,6 +21,10 @@ class ManifestBody(BaseModel):
     validation_fraction: float = Field(default=0.1, ge=0.0, le=1.0)
     test_fraction: float = Field(default=0.1, ge=0.0, le=1.0)
     split_salt: str = Field(default="vision-shark", min_length=1, max_length=256)
+
+
+class CalibrationBody(BaseModel):
+    registry: dict
 
 
 class ModelProfileBody(BaseModel):
@@ -44,6 +53,7 @@ def install_autonomy_training_routes(app, audit) -> None:
     def autonomy_training_profile():
         return {
             "data_contract": training_contract_profile(),
+            "camera_calibration": calibration_profile(),
             "model": world_model_profile(),
             "training": training_profile(),
             "bridge": bridge_profile(),
@@ -59,6 +69,20 @@ def install_autonomy_training_routes(app, audit) -> None:
             return world_model_profile(_model_config(body.config))
         except (TypeError, ValueError) as exc:
             raise HTTPException(400, str(exc)) from exc
+
+    @app.post('/api/vision/autonomy/training/calibration/validate')
+    def autonomy_calibration_validate(body: CalibrationBody):
+        try:
+            registry = calibration_registry_from_dict(body.registry)
+            result = calibration_registry_summary(registry)
+        except (TypeError, ValueError) as exc:
+            audit.append('autonomy', 'camera_calibration_rejected', {'error': str(exc)})
+            raise HTTPException(400, str(exc)) from exc
+        audit.append('autonomy', 'camera_calibration_validated', {
+            'calibration_count': result['calibration_count'],
+            'calibration_registry_sha256': result['calibration_registry_sha256'],
+        })
+        return result
 
     @app.post('/api/vision/autonomy/training/manifest/validate')
     def autonomy_manifest_validate(body: ManifestBody):
