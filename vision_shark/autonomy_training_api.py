@@ -7,6 +7,7 @@ from .autonomy.learned_world import WorldModelConfig, world_model_profile
 from .autonomy.training import training_profile
 from .autonomy.training_contracts import dataset_manifest_from_dict, training_contract_profile
 from .autonomy.world_model_bridge import bridge_profile, bridge_world_model_output
+from .autonomy.world_model_export import export_profile
 
 
 class ManifestBody(BaseModel):
@@ -46,6 +47,7 @@ def install_autonomy_training_routes(app, audit) -> None:
             "model": world_model_profile(),
             "training": training_profile(),
             "bridge": bridge_profile(),
+            "export": export_profile(),
             "offline_or_shadow_only": True,
             "live_actuation": False,
             "raw_vehicle_tx": False,
