@@ -6,6 +6,8 @@ from pathlib import Path
 from .adapter_discovery import discover_adapters
 from .autonomy import AutonomyRuntime
 from .autonomy.hybrid import HybridShadowPlanner
+from .autonomy.temporal_world import TemporalShadowRuntime
+from .autonomy.tesla_oss import official_hw3_model3_profile
 from .doip_transport import DoIPError,DoIPReadOnlyClient,parse_uds_response
 from .fingerprint import fingerprint_frames
 from .knowledge import KnowledgeGraph
@@ -20,7 +22,7 @@ class VisionOrchestrator:
         if knowledge_path is None and getattr(runtime,'storage',None) is not None:
             base=getattr(runtime.storage,'path',None)
             if base is not None:knowledge_path=Path(base).parent/'vehicle-knowledge.json'
-        self.knowledge=KnowledgeGraph(knowledge_path);self.autonomy=AutonomyRuntime();self.hybrid_autonomy=HybridShadowPlanner();self._lock=asyncio.Lock();self.diagnostic_endpoint=None;self.diagnostic_proof=None
+        self.knowledge=KnowledgeGraph(knowledge_path);self.autonomy=AutonomyRuntime();self.hybrid_autonomy=HybridShadowPlanner();self.temporal_autonomy=TemporalShadowRuntime();self._lock=asyncio.Lock();self.diagnostic_endpoint=None;self.diagnostic_proof=None
 
     def _audit(self,event,payload=None):
         if self.audit:self.audit.append('vision',event,payload or {})
@@ -111,5 +113,13 @@ class VisionOrchestrator:
         result=self.hybrid_autonomy.run(**payload)
         self._audit('hybrid_shadow_autonomy',{'selected':result['selected']['generator'],'risk':result['risk']['risk'],'odd_inside':result['odd']['inside']})
         return result
+    def temporal_shadow_step(self,payload):
+        result=self.temporal_autonomy.step(payload)
+        planner=result['planner']
+        self._audit('temporal_shadow_step',{'timestamp_s':result['timestamp_s'],'tracks':result['temporal_world']['track_count'],'selected':planner['selected']['generator'],'risk':planner['risk']['risk']})
+        return result
+    def temporal_shadow_reset(self):
+        result=self.temporal_autonomy.reset();self._audit('temporal_shadow_reset');return result
+    def tesla_oss_profile(self):return official_hw3_model3_profile()
     def status(self):
         out=self.session.snapshot();out['runtime']=self.runtime.status();out['diagnostic_endpoint']=self.diagnostic_endpoint;out['diagnostic_proof']=self.diagnostic_proof;out['knowledge_digest']=self.knowledge.digest();out['knowledge_facts']=len(self.knowledge.snapshot());return out
