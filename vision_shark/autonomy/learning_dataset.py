@@ -322,7 +322,7 @@ class SequenceWindowDataset:
             "recording_id": window.recording_id,
             "camera_ids": list(self.camera_ids),
             "timestamps_s": list(window.timestamps_s),
-            "calibration_ids": [sample.calibration_id for sample in history],
+            "calibration_ids": [sample.calibration_id or "" for sample in history],
         }
 
     def profile(self) -> dict[str, Any]:
