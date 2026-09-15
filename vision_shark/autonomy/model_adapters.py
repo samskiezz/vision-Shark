@@ -36,6 +36,18 @@ SUPPORTED_MODEL_FAMILIES = {
         "inputs": "multi-camera/video + driving context + optional reasoning prompt",
         "outputs": ["reasoning_trace", "trajectory", "action_prediction"],
     },
+    "vision_world_model": {
+        "reference": "Vision Shark native trainable multi-camera temporal world model",
+        "inputs": "multi-camera history + ego-state history",
+        "outputs": [
+            "occupancy",
+            "occupancy_flow",
+            "agent_forecasts",
+            "risk_field",
+            "camera_attention",
+            "multimodal_trajectory",
+        ],
+    },
 }
 
 
@@ -217,6 +229,31 @@ def adapt_alpamayo(output: dict[str, Any], *, ego_speed_ms: float) -> dict[str, 
     }
 
 
+def adapt_vision_world_model(output: dict[str, Any], *, ego_speed_ms: float) -> dict[str, Any]:
+    del ego_speed_ms
+    candidates: list[dict[str, Any]] = []
+    for index, raw in enumerate(output.get("trajectories", []) or []):
+        if not isinstance(raw, dict):
+            continue
+        candidate = _normalize_xy_trajectory(raw, index=index, source="vision_world_model")
+        if candidate is not None:
+            candidates.append(candidate)
+    return {
+        "model_family": "vision_world_model",
+        "policy_candidates": candidates,
+        "lanes": list(output.get("lanes", []) or []),
+        "camera_detections": list(output.get("objects", []) or []),
+        "model_products": {
+            "occupancy": output.get("occupancy"),
+            "occupancy_flow": output.get("occupancy_flow"),
+            "agent_forecasts": output.get("agent_forecasts"),
+            "risk_field": output.get("risk_field"),
+            "camera_attention": output.get("camera_attention"),
+            "model_metadata": output.get("model_metadata"),
+        },
+    }
+
+
 def normalize_model_output(model_family: str, output: dict[str, Any], *, ego_speed_ms: float = 0.0) -> dict[str, Any]:
     family = str(model_family).strip().lower()
     if family == "meteor":
@@ -227,6 +264,8 @@ def normalize_model_output(model_family: str, output: dict[str, Any], *, ego_spe
         result = adapt_openpilot_policy(output, ego_speed_ms=ego_speed_ms)
     elif family == "alpamayo":
         result = adapt_alpamayo(output, ego_speed_ms=ego_speed_ms)
+    elif family == "vision_world_model":
+        result = adapt_vision_world_model(output, ego_speed_ms=ego_speed_ms)
     else:
         raise ValueError(f"unsupported model family: {family}")
     return {
@@ -241,7 +280,7 @@ def normalize_model_output(model_family: str, output: dict[str, Any], *, ego_spe
 def adapter_profile() -> dict[str, Any]:
     return {
         "supported_model_families": SUPPORTED_MODEL_FAMILIES,
-        "purpose": "Normalize public/open autonomy model outputs into Vision Planning World v2 shadow-policy inputs.",
+        "purpose": "Normalize public/open and Vision-native autonomy model outputs into Vision Planning World v2 shadow-policy inputs.",
         "weights_included": False,
         "third_party_source_copied": False,
         "live_actuation": False,
