@@ -3,6 +3,7 @@ from __future__ import annotations
 from fastapi import HTTPException
 from pydantic import BaseModel, Field
 
+from .autonomy.model_adapters import adapter_profile, normalize_model_output
 from .autonomy.planning_world import PlanningWorldRuntime
 
 
@@ -28,6 +29,12 @@ class PlanningWorldStepBody(BaseModel):
     fusion_gate_m: float = Field(default=2.5, gt=0.0, le=25.0)
 
 
+class ModelAdapterBody(BaseModel):
+    model_family: str = Field(min_length=1, max_length=64)
+    ego_speed_ms: float = Field(default=0.0, ge=0.0, le=90.0)
+    output: dict
+
+
 def install_autonomy_routes(app, audit) -> None:
     runtime = PlanningWorldRuntime()
     app.state.planning_world_v2 = runtime
@@ -35,6 +42,27 @@ def install_autonomy_routes(app, audit) -> None:
     @app.get('/api/vision/autonomy/world-v2/profile')
     def planning_world_profile():
         return runtime.architecture_profile()
+
+    @app.get('/api/vision/autonomy/model-adapters/profile')
+    def model_adapters_profile():
+        return adapter_profile()
+
+    @app.post('/api/vision/autonomy/model-adapters/normalize')
+    def model_adapters_normalize(body: ModelAdapterBody):
+        try:
+            result = normalize_model_output(body.model_family, body.output, ego_speed_ms=body.ego_speed_ms)
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(400, str(exc)) from exc
+        audit.append(
+            'autonomy',
+            'model_output_normalized',
+            {
+                'model_family': result.get('model_family'),
+                'policy_candidates': len(result.get('policy_candidates') or []),
+                'live_actuation': False,
+            },
+        )
+        return result
 
     @app.post('/api/vision/autonomy/world-v2/reset')
     def planning_world_reset():
